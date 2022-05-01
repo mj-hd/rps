@@ -1,8 +1,10 @@
 use std::path::Path;
 
-use rps::interconnect::Interconnect;
+use rps::{bios::Bios, cpu::cpu::Cpu, interconnect::Interconnect};
 
 fn main() {
+    env_logger::init();
+
     let bios = Bios::new(&Path::new("roms/bios.rom")).unwrap();
 
     let inter = Interconnect::new(bios);

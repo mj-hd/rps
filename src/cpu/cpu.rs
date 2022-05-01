@@ -1,3 +1,5 @@
+use log::{trace, warn};
+
 use crate::interconnect::Interconnect;
 
 use super::{instruction::Instruction, RegisterIndex};
@@ -67,6 +69,8 @@ impl Cpu {
     pub fn run_next_instruction(&mut self) {
         self.current_pc = self.pc;
 
+        trace!("current_pc: {:08x}", self.current_pc);
+
         if self.current_pc % 4 != 0 {
             self.exception(Exception::LoadAddressError);
             return;
@@ -75,7 +79,7 @@ impl Cpu {
         let instruction = Instruction(self.load32(self.pc));
 
         self.pc = self.next_pc;
-        self.next_pc = self.next_pc.wrapping_sub(4);
+        self.next_pc = self.next_pc.wrapping_add(4);
 
         let (reg, val) = self.load;
         self.set_reg(reg, val);
@@ -116,12 +120,7 @@ impl Cpu {
     fn branch(&mut self, offset: u32) {
         let offset = offset << 2;
 
-        let mut pc = self.pc;
-
-        pc = pc.wrapping_add(offset);
-        pc = pc.wrapping_add(4);
-
-        self.pc = pc;
+        self.next_pc = self.pc.wrapping_add(offset);
         self.branch = true;
     }
 
@@ -149,6 +148,8 @@ impl Cpu {
     }
 
     pub fn decode_and_execute(&mut self, instruction: Instruction) {
+        trace!("decode_and_execute: {:08x}", instruction);
+
         match instruction.function() {
             0b000000 => match instruction.subfunction() {
                 0b000000 => self.op_sll(instruction),
@@ -277,7 +278,7 @@ impl Cpu {
     fn op_j(&mut self, instruction: Instruction) {
         let i = instruction.imm_jump();
 
-        self.pc = (self.pc & 0xF0000000) | (i << 2);
+        self.next_pc = (self.pc & 0xF0000000) | (i << 2);
         self.branch = true;
     }
 
@@ -339,6 +340,7 @@ impl Cpu {
             12 => self.sr,
             13 => self.cause,
             14 => self.epc,
+            15 => 0, // Processor ID (Read)
             _ => panic!("Unhandled read cop0 register: {:08x}", cop_r),
         };
 
@@ -432,7 +434,7 @@ impl Cpu {
     fn op_jr(&mut self, instruction: Instruction) {
         let s = instruction.s();
 
-        self.pc = self.reg(s);
+        self.next_pc = self.reg(s);
         self.branch = true;
     }
 
@@ -444,7 +446,7 @@ impl Cpu {
 
         self.set_reg(d, ra);
 
-        self.pc = self.reg(s);
+        self.next_pc = self.reg(s);
         self.branch = true;
     }
 
@@ -740,7 +742,7 @@ impl Cpu {
 
     fn op_lb(&mut self, instruction: Instruction) {
         if self.sr & 0x10000 != 0 {
-            println!("Ignoring load while cache is isolated");
+            warn!("Ignoring load while cache is isolated");
             return;
         }
 
@@ -757,7 +759,7 @@ impl Cpu {
 
     fn op_lh(&mut self, instruction: Instruction) {
         if self.sr & 0x10000 != 0 {
-            println!("Ignoring load while cache is isolated");
+            warn!("Ignoring load while cache is isolated");
             return;
         }
 
@@ -778,7 +780,7 @@ impl Cpu {
 
     fn op_lw(&mut self, instruction: Instruction) {
         if self.sr & 0x10000 != 0 {
-            println!("Ignoring load while cache is isolated");
+            warn!("Ignoring load while cache is isolated");
             return;
         }
 
@@ -835,7 +837,7 @@ impl Cpu {
 
     fn op_sb(&mut self, instruction: Instruction) {
         if self.sr & 0x10000 != 0 {
-            println!("Ignoring store while cache is isolated");
+            warn!("Ignoring store while cache is isolated");
             return;
         }
 
@@ -851,7 +853,7 @@ impl Cpu {
 
     fn op_sh(&mut self, instruction: Instruction) {
         if self.sr & 0x10000 != 0 {
-            println!("Ignoring store while cache is isolatee");
+            warn!("Ignoring store while cache is isolatee");
             return;
         }
 
@@ -872,7 +874,7 @@ impl Cpu {
 
     fn op_sw(&mut self, instruction: Instruction) {
         if self.sr & 0x10000 != 0 {
-            println!("ignoring store while cache is isolated");
+            warn!("ignoring store while cache is isolated");
             return;
         }
 
@@ -883,7 +885,7 @@ impl Cpu {
         let addr = self.reg(s).wrapping_add(i);
 
         if addr % 4 == 0 {
-            let v = self.reg(s);
+            let v = self.reg(t);
 
             self.store32(addr, v);
         } else {

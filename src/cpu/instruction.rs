@@ -2,7 +2,7 @@ use std::fmt::LowerHex;
 
 use super::RegisterIndex;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Instruction(pub u32);
 
 impl LowerHex for Instruction {
