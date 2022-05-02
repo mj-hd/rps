@@ -1,4 +1,4 @@
-use log::{trace, warn};
+use log::{debug, trace, warn};
 
 use crate::interconnect::Interconnect;
 
@@ -9,6 +9,9 @@ enum Exception {
     StoreAddressError = 0x5,
     SysCall = 0x8,
     Overflow = 0xC,
+    Break = 0x9,
+    CoprocessorError = 0xB,
+    IllegalInstruction = 0xA,
 }
 
 pub struct Cpu {
@@ -69,14 +72,17 @@ impl Cpu {
     pub fn run_next_instruction(&mut self) {
         self.current_pc = self.pc;
 
-        trace!("current_pc: {:08x}", self.current_pc);
-
         if self.current_pc % 4 != 0 {
             self.exception(Exception::LoadAddressError);
             return;
         }
 
         let instruction = Instruction(self.load32(self.pc));
+
+        debug!(
+            "current_pc: 0x{:08x} (0x{:08x})",
+            self.current_pc, instruction
+        );
 
         self.pc = self.next_pc;
         self.next_pc = self.next_pc.wrapping_add(4);
@@ -134,6 +140,7 @@ impl Cpu {
         self.sr &= !0x3F;
         self.sr |= (mode << 2) & 0x3F;
 
+        self.cause &= !0x7C;
         self.cause = (cause as u32) << 2;
 
         self.epc = self.current_pc;
@@ -144,7 +151,7 @@ impl Cpu {
         }
 
         self.pc = handler;
-        self.next_pc = self.pc.wrapping_sub(4);
+        self.next_pc = self.pc.wrapping_add(4);
     }
 
     pub fn decode_and_execute(&mut self, instruction: Instruction) {
@@ -180,7 +187,7 @@ impl Cpu {
                 0b100111 => self.op_nor(instruction),
                 0b101010 => self.op_slt(instruction),
                 0b101011 => self.op_sltu(instruction),
-                _ => panic!("Unhandled isntruction {:08x}", instruction.0),
+                _ => self.op_illegal(instruction),
             },
             0b000001 => self.op_bxx(instruction),
             0b000010 => self.op_j(instruction),
@@ -201,7 +208,6 @@ impl Cpu {
             0b010001 => self.op_cop1(instruction),
             0b010010 => self.op_cop2(instruction),
             0b010011 => self.op_cop3(instruction),
-            0b010100 => self.op_cop4(instruction),
             0b100000 => self.op_lb(instruction),
             0b100001 => self.op_lh(instruction),
             0b100010 => self.op_lwl(instruction),
@@ -222,7 +228,7 @@ impl Cpu {
             0b111001 => self.op_swc1(instruction),
             0b111010 => self.op_swc2(instruction),
             0b111011 => self.op_swc3(instruction),
-            _ => panic!("Unhandled instruction {:08x}", instruction),
+            _ => self.op_illegal(instruction),
         }
     }
 
@@ -366,19 +372,15 @@ impl Cpu {
     }
 
     fn op_cop1(&mut self, instruction: Instruction) {
-        todo!()
+        self.exception(Exception::CoprocessorError);
     }
 
     fn op_cop2(&mut self, instruction: Instruction) {
-        todo!()
+        panic!("unhandled GTE instruction: {:08x}", instruction);
     }
 
     fn op_cop3(&mut self, instruction: Instruction) {
-        todo!()
-    }
-
-    fn op_cop4(&mut self, instruction: Instruction) {
-        todo!()
+        self.exception(Exception::CoprocessorError);
     }
 
     fn op_srl(&mut self, instruction: Instruction) {
@@ -442,7 +444,7 @@ impl Cpu {
         let d = instruction.d();
         let s = instruction.s();
 
-        let ra = self.pc;
+        let ra = self.next_pc;
 
         self.set_reg(d, ra);
 
@@ -451,11 +453,12 @@ impl Cpu {
     }
 
     fn op_syscall(&mut self, instruction: Instruction) {
+        trace!("op_syscall {:?}", instruction);
         self.exception(Exception::SysCall)
     }
 
     fn op_break(&mut self, instruction: Instruction) {
-        todo!()
+        self.exception(Exception::Break);
     }
 
     fn op_mfhi(&mut self, instruction: Instruction) {
@@ -490,8 +493,8 @@ impl Cpu {
         let s = instruction.s();
         let t = instruction.t();
 
-        let a = self.reg(s) as i64;
-        let b = self.reg(t) as i64;
+        let a = (self.reg(s) as i32) as i64;
+        let b = (self.reg(t) as i32) as i64;
 
         let v = a * b;
 
@@ -600,7 +603,17 @@ impl Cpu {
     }
 
     fn op_sub(&mut self, instruction: Instruction) {
-        todo!()
+        let s = instruction.s();
+        let t = instruction.t();
+        let d = instruction.d();
+
+        let s = self.reg(s) as i32;
+        let t = self.reg(t) as i32;
+
+        match s.checked_sub(t) {
+            Some(v) => self.set_reg(d, v as u32),
+            None => self.exception(Exception::Overflow),
+        }
     }
 
     fn op_subu(&mut self, instruction: Instruction) {
@@ -624,7 +637,13 @@ impl Cpu {
     }
 
     fn op_xor(&mut self, instruction: Instruction) {
-        todo!()
+        let d = instruction.d();
+        let s = instruction.s();
+        let t = instruction.t();
+
+        let v = self.reg(s) ^ self.reg(t);
+
+        self.set_reg(d, v);
     }
 
     fn op_nor(&mut self, instruction: Instruction) {
@@ -666,7 +685,7 @@ impl Cpu {
         let test = test ^ is_bgez;
 
         if is_link {
-            let ra = self.pc;
+            let ra = self.next_pc;
 
             self.set_reg(RegisterIndex(31), ra);
         }
@@ -677,7 +696,7 @@ impl Cpu {
     }
 
     fn op_jal(&mut self, instruction: Instruction) {
-        let ra = self.pc;
+        let ra = self.next_pc;
 
         self.set_reg(RegisterIndex(31), ra);
 
@@ -737,15 +756,16 @@ impl Cpu {
     }
 
     fn op_xori(&mut self, instruction: Instruction) {
-        todo!()
+        let i = instruction.imm();
+        let t = instruction.t();
+        let s = instruction.s();
+
+        let v = self.reg(s) ^ i;
+
+        self.set_reg(t, v);
     }
 
     fn op_lb(&mut self, instruction: Instruction) {
-        if self.sr & 0x10000 != 0 {
-            warn!("Ignoring load while cache is isolated");
-            return;
-        }
-
         let i = instruction.imm_se();
         let t = instruction.t();
         let s = instruction.s();
@@ -758,11 +778,6 @@ impl Cpu {
     }
 
     fn op_lh(&mut self, instruction: Instruction) {
-        if self.sr & 0x10000 != 0 {
-            warn!("Ignoring load while cache is isolated");
-            return;
-        }
-
         let i = instruction.imm_se();
         let t = instruction.t();
         let s = instruction.s();
@@ -779,11 +794,6 @@ impl Cpu {
     }
 
     fn op_lw(&mut self, instruction: Instruction) {
-        if self.sr & 0x10000 != 0 {
-            warn!("Ignoring load while cache is isolated");
-            return;
-        }
-
         let i = instruction.imm_se();
         let t = instruction.t();
         let s = instruction.s();
@@ -800,7 +810,26 @@ impl Cpu {
     }
 
     fn op_lwl(&mut self, instruction: Instruction) {
-        todo!()
+        let i = instruction.imm_se();
+        let t = instruction.t();
+        let s = instruction.s();
+
+        let addr = self.reg(s).wrapping_add(i);
+
+        let cur_v = self.out_regs[t.0 as usize];
+
+        let aligned_addr = addr & !3;
+        let aligned_word = self.load32(aligned_addr);
+
+        let v = match addr & 3 {
+            0 => (cur_v & 0x00FFFFFF) | (aligned_word << 24),
+            1 => (cur_v & 0x0000FFFF) | (aligned_word << 16),
+            2 => (cur_v & 0x000000FF) | (aligned_word << 8),
+            3 => (cur_v & 0x00000000) | (aligned_word << 0),
+            _ => unreachable!(),
+        };
+
+        self.load = (t, v);
     }
 
     fn op_lbu(&mut self, instruction: Instruction) {
@@ -832,7 +861,26 @@ impl Cpu {
     }
 
     fn op_lwr(&mut self, instruction: Instruction) {
-        todo!()
+        let i = instruction.imm_se();
+        let t = instruction.t();
+        let s = instruction.s();
+
+        let addr = self.reg(s).wrapping_add(i);
+
+        let cur_v = self.out_regs[t.0 as usize];
+
+        let aligned_addr = addr & !3;
+        let aligned_word = self.load32(aligned_addr);
+
+        let v = match addr & 3 {
+            0 => (cur_v & 0x00000000) | (aligned_word >> 0),
+            1 => (cur_v & 0xFF000000) | (aligned_word >> 8),
+            2 => (cur_v & 0xFFFF0000) | (aligned_word >> 16),
+            3 => (cur_v & 0xFFFFFF00) | (aligned_word >> 24),
+            _ => unreachable!(),
+        };
+
+        self.load = (t, v);
     }
 
     fn op_sb(&mut self, instruction: Instruction) {
@@ -894,42 +942,82 @@ impl Cpu {
     }
 
     fn op_swl(&mut self, instruction: Instruction) {
-        todo!()
+        let i = instruction.imm_se();
+        let t = instruction.t();
+        let s = instruction.s();
+
+        let addr = self.reg(s).wrapping_add(i);
+        let v = self.reg(t);
+
+        let aligned_addr = addr & !3;
+        let cur_mem = self.load32(aligned_addr);
+
+        let mem = match addr & 3 {
+            0 => (cur_mem & 0xFFFFFF00) | (v >> 24),
+            1 => (cur_mem & 0xFFFF0000) | (v >> 16),
+            2 => (cur_mem & 0xFF000000) | (v >> 8),
+            3 => (cur_mem & 0x00000000) | (v >> 0),
+            _ => unreachable!(),
+        };
+
+        self.store32(aligned_addr, mem);
     }
 
     fn op_swr(&mut self, instruction: Instruction) {
-        todo!()
+        let i = instruction.imm_se();
+        let t = instruction.t();
+        let s = instruction.s();
+
+        let addr = self.reg(s).wrapping_add(i);
+        let v = self.reg(t);
+
+        let aligned_addr = addr & !3;
+        let cur_mem = self.load32(aligned_addr);
+
+        let mem = match addr & 3 {
+            0 => (cur_mem & 0x00000000) | (v << 0),
+            1 => (cur_mem & 0x000000FF) | (v << 8),
+            2 => (cur_mem & 0x0000FFFF) | (v << 16),
+            3 => (cur_mem & 0x00FFFFFF) | (v << 24),
+            _ => unreachable!(),
+        };
+
+        self.store32(aligned_addr, mem);
     }
 
     fn op_lwc0(&mut self, instruction: Instruction) {
-        todo!()
+        self.exception(Exception::CoprocessorError);
     }
 
     fn op_lwc1(&mut self, instruction: Instruction) {
-        todo!()
+        self.exception(Exception::CoprocessorError);
     }
 
     fn op_lwc2(&mut self, instruction: Instruction) {
-        todo!()
+        panic!("unhandled GTE LWC: {:08x}", instruction);
     }
 
     fn op_lwc3(&mut self, instruction: Instruction) {
-        todo!()
+        self.exception(Exception::CoprocessorError);
     }
 
     fn op_swc0(&mut self, instruction: Instruction) {
-        todo!()
+        self.exception(Exception::CoprocessorError);
     }
 
     fn op_swc1(&mut self, instruction: Instruction) {
-        todo!()
+        self.exception(Exception::CoprocessorError);
     }
 
     fn op_swc2(&mut self, instruction: Instruction) {
-        todo!()
+        panic!("unhandled GTE SWC: {:08x}", instruction);
     }
 
     fn op_swc3(&mut self, instruction: Instruction) {
-        todo!()
+        self.exception(Exception::CoprocessorError);
+    }
+
+    fn op_illegal(&mut self, instruction: Instruction) {
+        self.exception(Exception::IllegalInstruction);
     }
 }

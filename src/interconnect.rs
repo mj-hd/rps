@@ -1,10 +1,11 @@
 use log::{trace, warn};
 
-use crate::{bios::Bios, ram::Ram};
+use crate::{bios::Bios, dma::Dma, ram::Ram};
 
 pub struct Interconnect {
     bios: Bios,
     ram: Ram,
+    dma: Dma,
 }
 
 impl Interconnect {
@@ -12,6 +13,7 @@ impl Interconnect {
         Interconnect {
             bios,
             ram: Ram::new(),
+            dma: Dma::new(),
         }
     }
 
@@ -60,8 +62,7 @@ impl Interconnect {
         }
 
         if let Some(offset) = map::DMA.contains(addr) {
-            warn!("DMA read: {}", offset);
-            return 0;
+            return self.dma_reg(offset);
         }
 
         if let Some(offset) = map::GPU.contains(addr) {
@@ -188,9 +189,8 @@ impl Interconnect {
             return;
         }
 
-        if let Some(_) = map::DMA.contains(addr) {
-            warn!("DMA write: {:08x} {:08x}", abs_addr, val);
-            return;
+        if let Some(offset) = map::DMA.contains(addr) {
+            return self.set_dma_reg(offset, val);
         }
 
         if let Some(offset) = map::GPU.contains(addr) {
@@ -257,6 +257,20 @@ impl Interconnect {
         }
 
         panic!("unhandled store8 into address: {:08x}", abs_addr);
+    }
+
+    fn dma_reg(&self, offset: u32) -> u32 {
+        match offset {
+            0x70 => self.dma.control(),
+            _ => panic!("unhandled DMA access"),
+        }
+    }
+
+    fn set_dma_reg(&mut self, offset: u32, val: u32) {
+        match offset {
+            0x70 => self.dma.set_control(val),
+            _ => panic!("unhandled DMA access"),
+        }
     }
 }
 
