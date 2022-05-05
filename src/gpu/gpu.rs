@@ -1,8 +1,8 @@
-use super::{
-    command::CommandBuffer,
-    primitive::{Color, Position},
-    renderer::Renderer,
-};
+use log::warn;
+
+use crate::gpu::primitive::{Color, Position};
+
+use super::{command::CommandBuffer, renderer::Renderer};
 
 pub struct Gpu {
     page_base_x: u8,
@@ -192,8 +192,6 @@ impl Gpu {
 
     // GP0(0x28) monochrome opaque quad
     fn gp0_quad_mono_opaque(&mut self) {
-        println!("Draw quad");
-
         let positions = [
             Position::from_gp0(self.gp0_command[1]),
             Position::from_gp0(self.gp0_command[2]),
@@ -208,8 +206,6 @@ impl Gpu {
 
     // GP0(0x2C) texture blend opaque qud
     fn gp0_quad_texture_blend_opaque(&mut self) {
-        println!("Draw texture blend quad");
-
         let positions = [
             Position::from_gp0(self.gp0_command[1]),
             Position::from_gp0(self.gp0_command[3]),
@@ -225,8 +221,6 @@ impl Gpu {
 
     // GP0(0x30) shaded opaque triangle
     fn gp0_triangle_shaded_opaque(&mut self) {
-        println!("Draw triangle shaded");
-
         let positions = [
             Position::from_gp0(self.gp0_command[1]),
             Position::from_gp0(self.gp0_command[3]),
@@ -244,8 +238,6 @@ impl Gpu {
 
     // GP0(0x38) shaded opaque quad
     fn gp0_quad_shaded_opaque(&mut self) {
-        println!("Draw quad shaded");
-
         let positions = [
             Position::from_gp0(self.gp0_command[1]),
             Position::from_gp0(self.gp0_command[3]),
@@ -285,7 +277,7 @@ impl Gpu {
         let width = res & 0xFFFF;
         let height = res >> 16;
 
-        println!("Unhandled image store: {}x{}", width, height);
+        warn!("Unhandled image store: {}x{}", width, height);
     }
 
     // GP0(0xE1) draw command
@@ -340,8 +332,6 @@ impl Gpu {
 
         self.renderer
             .set_draw_offset(((x << 5) as i16) >> 5, ((y << 5) as i16) >> 5);
-        // FIXME: 適切なタイミングでVSYNCを呼ぶ
-        self.renderer.display();
     }
 
     // GP0(0xE6) set mask bit setting
