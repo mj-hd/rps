@@ -8,13 +8,24 @@ struct VertexOutput {
   [[location(0)]] color: vec3<f32>;
 };
 
+struct Offset {
+  x: f32;
+  y: f32;
+};
+
+[[group(0), binding(0)]]
+var<uniform> offset: Offset;
+
 [[stage(vertex)]]
 fn vs_main(
   model: VertexInput,
 ) -> VertexOutput {
   var out: VertexOutput;
 
-  let pos = model.position;
+  let pos = vec2<f32>(
+    model.position.x + offset.x,
+    model.position.y + offset.y,
+  );
 
   let x = (pos.x / 512.0) - 1.0;
   let y = 1.0 - (pos.y / 256.0);

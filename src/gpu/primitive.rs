@@ -41,6 +41,20 @@ impl Vertex {
     }
 }
 
+#[derive(Clone, Copy, Default, Debug, Pod, Zeroable)]
+#[repr(C)]
+pub struct Offset {
+    pub x: f32,
+    pub y: f32,
+}
+
+impl Offset {
+    pub fn set(&mut self, x: i16, y: i16) {
+        self.x = x as f32;
+        self.y = y as f32;
+    }
+}
+
 #[derive(Clone, Copy, Default, Debug)]
 pub struct Position(pub i16, pub i16);
 

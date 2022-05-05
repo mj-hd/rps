@@ -1,6 +1,9 @@
 use log::warn;
 
-use crate::gpu::primitive::{Color, Position};
+use crate::{
+    addressible::{AccessWidth, Addressible},
+    gpu::primitive::{Color, Position},
+};
 
 use super::{command::CommandBuffer, renderer::Renderer};
 
@@ -93,7 +96,33 @@ impl Gpu {
         }
     }
 
-    pub fn status(&self) -> u32 {
+    pub fn load<T: Addressible>(&self, offset: u32) -> T {
+        if T::width() != AccessWidth::Word {
+            panic!("Unhandled {:?} GPU load", T::width());
+        }
+
+        let r = match offset {
+            0 => self.read(),
+            4 => self.status(),
+            _ => unreachable!(),
+        };
+
+        Addressible::from_u32(r)
+    }
+
+    pub fn store<T: Addressible>(&mut self, offset: u32, val: T) {
+        if T::width() != AccessWidth::Word {
+            panic!("Unhandled {:?} GPU store", T::width());
+        }
+
+        let r = match offset {
+            0 => self.gp0(val.as_u32()),
+            4 => self.gp1(val.as_u32()),
+            _ => unreachable!(),
+        };
+    }
+
+    fn status(&self) -> u32 {
         let mut r = 0u32;
 
         r |= (self.page_base_x as u32) << 0;
@@ -134,7 +163,7 @@ impl Gpu {
         r
     }
 
-    pub fn read(&self) -> u32 {
+    fn read(&self) -> u32 {
         0
     }
 
@@ -341,7 +370,7 @@ impl Gpu {
         self.preserve_masked_pixels = (val & 2) != 0;
     }
 
-    pub fn gp1(&mut self, val: u32) {
+    fn gp1(&mut self, val: u32) {
         let opcode = (val >> 24) & 0xFF;
 
         match opcode {

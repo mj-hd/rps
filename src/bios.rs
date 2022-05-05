@@ -2,6 +2,8 @@ use anyhow::{bail, Result};
 use log::trace;
 use std::{fs::File, io::Read, path::Path};
 
+use crate::addressible::Addressible;
+
 const BIOS_SIZE: u64 = 512 * 1024;
 
 pub struct Bios {
@@ -23,28 +25,17 @@ impl Bios {
         Ok(Bios { data })
     }
 
-    pub fn load32(&self, offset: u32) -> u32 {
+    pub fn load<T: Addressible>(&self, offset: u32) -> T {
         let offset = offset as usize;
 
-        let b0 = self.data[offset + 0] as u32;
-        let b1 = self.data[offset + 1] as u32;
-        let b2 = self.data[offset + 2] as u32;
-        let b3 = self.data[offset + 3] as u32;
+        let mut v = 0;
 
-        let result = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+        for i in 0..T::width() as usize {
+            v |= (self.data[offset + i] as u32) << (i * 8);
+        }
 
-        trace!("BIOS load32 {:08x} => {:08x}", offset, result);
+        trace!("BIOS{:?} load {:08x} => {:08x}", T::width(), offset, v);
 
-        result
-    }
-
-    pub fn load8(&self, offset: u32) -> u8 {
-        let offset = offset as usize;
-
-        let result = self.data[offset];
-
-        trace!("BIOS load8 {:08x} => {:02x}", offset, result);
-
-        result
+        Addressible::from_u32(v)
     }
 }

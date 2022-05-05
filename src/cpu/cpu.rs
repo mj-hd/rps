@@ -1,8 +1,27 @@
 use log::{debug, trace, warn};
 
-use crate::interconnect::Interconnect;
+use crate::{addressible::Addressible, interconnect::Interconnect};
 
 use super::{instruction::Instruction, RegisterIndex};
+
+pub enum RunEvent {
+    IncomingData,
+    Event(Event),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Event {
+    DoneStep,
+    Halted,
+    Break,
+    WatchWrite(u32),
+    WatchRead(u32),
+}
+
+pub enum ExecMode {
+    Continue,
+    RangeStep(u32, u32),
+}
 
 enum Exception {
     LoadAddressError = 0x4,
@@ -15,9 +34,9 @@ enum Exception {
 }
 
 pub struct Cpu {
-    pc: u32,
+    pub pc: u32,
     next_pc: u32,
-    regs: [u32; 32],
+    pub regs: [u32; 32],
     out_regs: [u32; 32],
     inter: Interconnect,
     load: (RegisterIndex, u32),
@@ -25,12 +44,17 @@ pub struct Cpu {
     delay_slot: bool,
 
     // COP0
-    sr: u32,
-    hi: u32,
-    lo: u32,
+    pub sr: u32,
+    pub hi: u32,
+    pub lo: u32,
     current_pc: u32,
-    cause: u32,
-    epc: u32,
+    pub cause: u32,
+    pub epc: u32,
+
+    pub exec_mode: ExecMode,
+    pub breakpoints: Vec<u32>,
+    pub watchpoints: Vec<u32>,
+    event: Option<Event>,
 }
 
 impl Cpu {
@@ -56,6 +80,10 @@ impl Cpu {
             epc: 0,
             branch: false,
             delay_slot: false,
+            exec_mode: ExecMode::Continue,
+            breakpoints: vec![],
+            watchpoints: vec![],
+            event: None,
         }
     }
 
@@ -69,20 +97,59 @@ impl Cpu {
         self.out_regs[0] = 0;
     }
 
-    pub fn run_next_instruction(&mut self) {
+    pub fn run(&mut self, mut poll_incoming_data: impl FnMut() -> bool) -> RunEvent {
+        match self.exec_mode {
+            ExecMode::Continue => {
+                let mut cycles = 0;
+
+                loop {
+                    if cycles % 1024 == 0 {
+                        if poll_incoming_data() {
+                            break RunEvent::IncomingData;
+                        }
+                    }
+
+                    cycles += 1;
+
+                    if let Some(event) = self.step() {
+                        break RunEvent::Event(event);
+                    }
+                }
+            }
+            ExecMode::RangeStep(start, end) => {
+                let mut cycles = 0;
+                loop {
+                    if cycles % 1024 == 0 {
+                        if poll_incoming_data() {
+                            break RunEvent::IncomingData;
+                        }
+                    }
+
+                    cycles += 1;
+
+                    if let Some(event) = self.step() {
+                        break RunEvent::Event(event);
+                    }
+
+                    if !(start..end).contains(&self.pc) {
+                        break RunEvent::Event(Event::DoneStep);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn step(&mut self) -> Option<Event> {
+        self.event = None;
+
         self.current_pc = self.pc;
 
         if self.current_pc % 4 != 0 {
             self.exception(Exception::LoadAddressError);
-            return;
+            return self.event;
         }
 
-        let instruction = Instruction(self.load32(self.pc));
-
-        debug!(
-            "current_pc: 0x{:08x} (0x{:08x})",
-            self.current_pc, instruction
-        );
+        let instruction = Instruction(self.load::<u32>(self.pc));
 
         self.pc = self.next_pc;
         self.next_pc = self.next_pc.wrapping_add(4);
@@ -97,30 +164,44 @@ impl Cpu {
         self.decode_and_execute(instruction);
 
         self.regs = self.out_regs;
+
+        if self.breakpoints.contains(&self.pc) {
+            debug!("BREAK {:08x}", self.pc);
+            self.event = Some(Event::Break);
+            return self.event;
+        }
+
+        return self.event;
     }
 
-    pub fn load32(&self, addr: u32) -> u32 {
-        self.inter.load32(addr)
+    pub fn pc(&self) -> u32 {
+        self.pc
     }
 
-    pub fn load16(&self, addr: u32) -> u16 {
-        self.inter.load16(addr)
+    pub fn load<T: Addressible>(&mut self, addr: u32) -> T {
+        if self.watchpoints.contains(&addr) {
+            self.event = Some(Event::WatchRead(addr));
+        }
+        self.inter.load(addr)
     }
 
-    pub fn load8(&self, addr: u32) -> u8 {
-        self.inter.load8(addr)
+    pub fn store<T: Addressible>(&mut self, addr: u32, val: T) {
+        if self.watchpoints.contains(&addr) {
+            self.event = Some(Event::WatchWrite(addr));
+        }
+        if self.sr & 0x10000 != 0 {
+            warn!("Ignoring store while cache is isolated");
+            return;
+        }
+        self.inter.store(addr, val)
     }
 
-    pub fn store32(&mut self, addr: u32, val: u32) {
-        self.inter.store32(addr, val)
+    pub fn examine<T: Addressible>(&mut self, addr: u32) -> T {
+        self.inter.load(addr)
     }
 
-    pub fn store16(&mut self, addr: u32, val: u16) {
-        self.inter.store16(addr, val)
-    }
-
-    pub fn store8(&mut self, addr: u32, val: u8) {
-        self.inter.store8(addr, val)
+    pub fn put<T: Addressible>(&mut self, addr: u32, val: T) {
+        self.inter.store(addr, val);
     }
 
     fn branch(&mut self, offset: u32) {
@@ -353,11 +434,11 @@ impl Cpu {
         self.load = (cpu_r, v);
     }
 
-    fn op_cfc0(&mut self, instruction: Instruction) {
+    fn op_cfc0(&mut self, _: Instruction) {
         todo!()
     }
 
-    fn op_ctc0(&mut self, instruction: Instruction) {
+    fn op_ctc0(&mut self, _: Instruction) {
         todo!()
     }
 
@@ -371,7 +452,7 @@ impl Cpu {
         self.sr |= mode >> 2;
     }
 
-    fn op_cop1(&mut self, instruction: Instruction) {
+    fn op_cop1(&mut self, _: Instruction) {
         self.exception(Exception::CoprocessorError);
     }
 
@@ -379,7 +460,7 @@ impl Cpu {
         panic!("unhandled GTE instruction: {:08x}", instruction);
     }
 
-    fn op_cop3(&mut self, instruction: Instruction) {
+    fn op_cop3(&mut self, _: Instruction) {
         self.exception(Exception::CoprocessorError);
     }
 
@@ -452,12 +533,12 @@ impl Cpu {
         self.branch = true;
     }
 
-    fn op_syscall(&mut self, instruction: Instruction) {
-        trace!("op_syscall {:?}", instruction);
+    fn op_syscall(&mut self, _: Instruction) {
         self.exception(Exception::SysCall)
     }
 
-    fn op_break(&mut self, instruction: Instruction) {
+    fn op_break(&mut self, _: Instruction) {
+        self.event = Some(Event::Break);
         self.exception(Exception::Break);
     }
 
@@ -772,7 +853,7 @@ impl Cpu {
 
         let addr = self.reg(s).wrapping_add(i);
 
-        let v = self.load8(addr) as i8;
+        let v = self.load::<u8>(addr) as i8;
 
         self.load = (t, v as u32);
     }
@@ -785,7 +866,7 @@ impl Cpu {
         let addr = self.reg(s).wrapping_add(i);
 
         if addr % 2 == 0 {
-            let v = self.load16(addr) as i16;
+            let v = self.load::<u16>(addr) as i16;
 
             self.load = (t, v as u32);
         } else {
@@ -801,7 +882,7 @@ impl Cpu {
         let addr = self.reg(s).wrapping_add(i);
 
         if addr % 4 == 0 {
-            let v = self.load32(addr);
+            let v = self.load::<u32>(addr);
 
             self.load = (t, v);
         } else {
@@ -819,7 +900,7 @@ impl Cpu {
         let cur_v = self.out_regs[t.0 as usize];
 
         let aligned_addr = addr & !3;
-        let aligned_word = self.load32(aligned_addr);
+        let aligned_word = self.load::<u32>(aligned_addr);
 
         let v = match addr & 3 {
             0 => (cur_v & 0x00FFFFFF) | (aligned_word << 24),
@@ -839,7 +920,7 @@ impl Cpu {
 
         let addr = self.reg(s).wrapping_add(i);
 
-        let v = self.load8(addr);
+        let v = self.load::<u8>(addr);
 
         self.load = (t, v as u32);
     }
@@ -852,7 +933,7 @@ impl Cpu {
         let addr = self.reg(s).wrapping_add(i);
 
         if addr % 2 == 0 {
-            let v = self.load16(addr);
+            let v = self.load::<u16>(addr);
 
             self.load = (t, v as u32);
         } else {
@@ -870,7 +951,7 @@ impl Cpu {
         let cur_v = self.out_regs[t.0 as usize];
 
         let aligned_addr = addr & !3;
-        let aligned_word = self.load32(aligned_addr);
+        let aligned_word = self.load::<u32>(aligned_addr);
 
         let v = match addr & 3 {
             0 => (cur_v & 0x00000000) | (aligned_word >> 0),
@@ -896,7 +977,7 @@ impl Cpu {
         let addr = self.reg(s).wrapping_add(i);
         let v = self.reg(t);
 
-        self.store8(addr, v as u8);
+        self.store::<u8>(addr, v as u8);
     }
 
     fn op_sh(&mut self, instruction: Instruction) {
@@ -914,7 +995,7 @@ impl Cpu {
         if addr % 2 == 0 {
             let v = self.reg(t);
 
-            self.store16(addr, v as u16);
+            self.store::<u16>(addr, v as u16);
         } else {
             self.exception(Exception::StoreAddressError);
         }
@@ -935,7 +1016,7 @@ impl Cpu {
         if addr % 4 == 0 {
             let v = self.reg(t);
 
-            self.store32(addr, v);
+            self.store::<u32>(addr, v);
         } else {
             self.exception(Exception::StoreAddressError);
         }
@@ -950,7 +1031,7 @@ impl Cpu {
         let v = self.reg(t);
 
         let aligned_addr = addr & !3;
-        let cur_mem = self.load32(aligned_addr);
+        let cur_mem = self.load::<u32>(aligned_addr);
 
         let mem = match addr & 3 {
             0 => (cur_mem & 0xFFFFFF00) | (v >> 24),
@@ -960,7 +1041,7 @@ impl Cpu {
             _ => unreachable!(),
         };
 
-        self.store32(aligned_addr, mem);
+        self.store::<u32>(aligned_addr, mem);
     }
 
     fn op_swr(&mut self, instruction: Instruction) {
@@ -972,7 +1053,7 @@ impl Cpu {
         let v = self.reg(t);
 
         let aligned_addr = addr & !3;
-        let cur_mem = self.load32(aligned_addr);
+        let cur_mem = self.load::<u32>(aligned_addr);
 
         let mem = match addr & 3 {
             0 => (cur_mem & 0x00000000) | (v << 0),
@@ -982,14 +1063,14 @@ impl Cpu {
             _ => unreachable!(),
         };
 
-        self.store32(aligned_addr, mem);
+        self.store::<u32>(aligned_addr, mem);
     }
 
-    fn op_lwc0(&mut self, instruction: Instruction) {
+    fn op_lwc0(&mut self, _: Instruction) {
         self.exception(Exception::CoprocessorError);
     }
 
-    fn op_lwc1(&mut self, instruction: Instruction) {
+    fn op_lwc1(&mut self, _: Instruction) {
         self.exception(Exception::CoprocessorError);
     }
 
@@ -997,15 +1078,15 @@ impl Cpu {
         panic!("unhandled GTE LWC: {:08x}", instruction);
     }
 
-    fn op_lwc3(&mut self, instruction: Instruction) {
+    fn op_lwc3(&mut self, _: Instruction) {
         self.exception(Exception::CoprocessorError);
     }
 
-    fn op_swc0(&mut self, instruction: Instruction) {
+    fn op_swc0(&mut self, _: Instruction) {
         self.exception(Exception::CoprocessorError);
     }
 
-    fn op_swc1(&mut self, instruction: Instruction) {
+    fn op_swc1(&mut self, _: Instruction) {
         self.exception(Exception::CoprocessorError);
     }
 
@@ -1013,11 +1094,11 @@ impl Cpu {
         panic!("unhandled GTE SWC: {:08x}", instruction);
     }
 
-    fn op_swc3(&mut self, instruction: Instruction) {
+    fn op_swc3(&mut self, _: Instruction) {
         self.exception(Exception::CoprocessorError);
     }
 
-    fn op_illegal(&mut self, instruction: Instruction) {
+    fn op_illegal(&mut self, _: Instruction) {
         self.exception(Exception::IllegalInstruction);
     }
 }

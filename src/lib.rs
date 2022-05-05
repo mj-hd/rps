@@ -1,3 +1,4 @@
+pub mod addressible;
 pub mod bios;
 pub mod cpu;
 pub mod dma;

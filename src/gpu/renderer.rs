@@ -5,7 +5,7 @@ use log::debug;
 use wgpu::{include_wgsl, util::DeviceExt};
 use winit::window::Window;
 
-use super::primitive::{Color, Position, Vertex};
+use super::primitive::{Color, Offset, Position, Vertex};
 
 pub struct Renderer {
     surface: wgpu::Surface,
@@ -17,6 +17,9 @@ pub struct Renderer {
     vertex_buffer: wgpu::Buffer,
     vertices: Vec<Vertex>,
     nvertices: u32,
+    offset: Offset,
+    offset_buffer: wgpu::Buffer,
+    offset_bind_group: wgpu::BindGroup,
 }
 
 impl Renderer {
@@ -56,7 +59,7 @@ impl Renderer {
 
         surface.configure(&device, &config);
 
-        let shader = device.create_shader_module(&include_wgsl!("glsl/renderer.wgsl"));
+        let shader = device.create_shader_module(&include_wgsl!("shader/renderer.wgsl"));
 
         let vertices = vec![Default::default(); VERTEX_BUFFER_LEN as usize];
 
@@ -66,15 +69,47 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
 
+        let offset = Offset::default();
+
+        let offset_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("offset buffer"),
+            contents: bytemuck::cast_slice(&[offset]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let offset_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("offset layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+
+        let offset_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("offset"),
+            layout: &offset_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: offset_buffer.as_entire_binding(),
+            }],
+        });
+
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("renderer"),
-                bind_group_layouts: &[],
+                label: Some("pipeline layout"),
+                bind_group_layouts: &[&offset_bind_group_layout],
                 push_constant_ranges: &[],
             });
 
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("renderer"),
+            label: Some("pipeline"),
             layout: Some(&render_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -118,6 +153,9 @@ impl Renderer {
             vertex_buffer,
             vertices,
             nvertices: 0,
+            offset,
+            offset_buffer,
+            offset_bind_group,
         }
     }
 
@@ -135,6 +173,8 @@ impl Renderer {
 
         self.queue
             .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
+        self.queue
+            .write_buffer(&self.offset_buffer, 0, bytemuck::cast_slice(&[self.offset]));
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -156,6 +196,7 @@ impl Renderer {
             });
 
             render_pass.set_pipeline(&self.render_pipeline);
+            render_pass.set_bind_group(0, &self.offset_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.draw(0..self.nvertices, 0..1);
         }
@@ -197,10 +238,7 @@ impl Renderer {
     }
 
     pub fn set_draw_offset(&mut self, x: i16, y: i16) {
-        // TODO: wgpuのuniformに置き換える
-        // unsafe {
-        //     gl::Uniform2i(self.uniform_offset, x as GLint, y as GLint);
-        // }
+        self.offset.set(x, y);
 
         self.render().unwrap();
     }
