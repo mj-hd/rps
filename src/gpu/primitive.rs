@@ -60,7 +60,7 @@ impl Color {
     pub fn from_gp0(val: u32) -> Color {
         let r = val as u8;
         let g = (val >> 8) as u8;
-        let b = (val > 16) as u8;
+        let b = (val >> 16) as u8;
 
         Color(r, g, b)
     }
