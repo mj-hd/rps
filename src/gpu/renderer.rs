@@ -239,8 +239,6 @@ impl Renderer {
 
     pub fn set_draw_offset(&mut self, x: i16, y: i16) {
         self.offset.set(x, y);
-
-        self.render().unwrap();
     }
 }
 

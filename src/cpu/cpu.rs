@@ -20,6 +20,7 @@ pub enum Event {
 
 pub enum ExecMode {
     Continue,
+    Step,
     RangeStep(u32, u32),
 }
 
@@ -40,7 +41,7 @@ pub struct Cpu {
     next_pc: u32,
     pub regs: [u32; 32],
     out_regs: [u32; 32],
-    inter: Interconnect,
+    pub inter: Interconnect,
     load: (RegisterIndex, u32),
     branch: bool,
     delay_slot: bool,
@@ -124,6 +125,7 @@ impl Cpu {
                     }
                 }
             }
+            ExecMode::Step => RunEvent::Event(self.step().unwrap_or(Event::DoneStep)),
             ExecMode::RangeStep(start, end) => {
                 let mut cycles = 0;
                 loop {

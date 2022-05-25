@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 use log::warn;
 
-use crate::addressible::Addressible;
+use crate::addressible::{AccessWidth, Addressible};
 
 enum CdRomStatus {
     Idle,
@@ -71,6 +71,11 @@ impl CdRom {
     }
 
     pub fn load<T: Addressible>(&mut self, offset: u32) -> T {
+        if T::width() != AccessWidth::Byte {
+            warn!("CD-ROM invalid load width {:?}", T::width());
+            return Addressible::from_u32(0);
+        }
+
         let r = match offset {
             0 => Addressible::from_u32(self.status() as u32),
             1 => self.response_fifo(),
@@ -87,6 +92,11 @@ impl CdRom {
     }
 
     pub fn store<T: Addressible>(&mut self, offset: u32, val: T) {
+        if T::width() != AccessWidth::Byte {
+            warn!("CD-ROM invalid store width {:?}", T::width());
+            return;
+        }
+
         let val = val.as_u32() as u8;
 
         match offset {

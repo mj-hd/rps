@@ -1,4 +1,4 @@
-use log::warn;
+use log::{trace, warn};
 
 use crate::{
     addressible::{AccessWidth, Addressible},
@@ -47,6 +47,9 @@ pub struct Gpu {
     pub hblank: bool,
     pub vblank: bool,
     pub dotclock: bool,
+
+    cycles: u16,
+    scanlines: u16,
 
     gp0_mode: Gp0Mode,
     gp0_words_remaining: u32,
@@ -101,6 +104,8 @@ impl Gpu {
             hblank: false,
             vblank: false,
             dotclock: false,
+            cycles: 0,
+            scanlines: 0,
         }
     }
 
@@ -128,6 +133,62 @@ impl Gpu {
             4 => self.gp1(val.as_u32()),
             _ => unreachable!(),
         };
+    }
+
+    pub fn tick(&mut self) {
+        self.cycles += 1;
+
+        let cycles_per_line = match self.vmode {
+            VMode::Pal => 3406,
+            VMode::Ntsc => 3413,
+        };
+
+        if self.cycles == cycles_per_line {
+            self.scanlines += 1;
+            self.cycles = 0;
+        }
+
+        self.dotclock = self.cycles
+            % match self.hres.width() {
+                256 => 10,
+                320 => 8,
+                368 => 7,
+                512 => 5,
+                640 => 3,
+                _ => unreachable!(),
+            }
+            == 0;
+
+        self.hblank = self.cycles >= self.hres.width();
+
+        let lines_per_frame = match self.vmode {
+            VMode::Pal => 314,
+            VMode::Ntsc => 263,
+        };
+
+        let visible_lines = match self.vres {
+            VerticalRes::Y240Lines => 240,
+            VerticalRes::Y480Lines => 480,
+        };
+
+        self.vblank = self.scanlines >= visible_lines;
+
+        if self.scanlines == lines_per_frame {
+            self.scanlines = 0;
+        }
+
+        if self.cycles == 0 && self.scanlines == 0 {
+            self.renderer.render().unwrap();
+        }
+
+        trace!(
+            "cycles: {}, scanlines: {}, hblank: {}, vblank: {}, dotclock: {}",
+            self.cycles,
+            self.scanlines,
+            self.hblank,
+            self.vblank,
+            self.dotclock
+        );
     }
 
     fn status(&self) -> u32 {
@@ -543,6 +604,19 @@ impl HorizontalRes {
         let HorizontalRes(hr) = self;
 
         (hr as u32) << 16
+    }
+
+    fn width(&self) -> u16 {
+        let HorizontalRes(hr) = self;
+
+        match hr {
+            0b000 => 256,
+            0b001 => 368,
+            0b010 => 320,
+            0b100 => 512,
+            0b110 => 640,
+            _ => unreachable!(),
+        }
     }
 }
 

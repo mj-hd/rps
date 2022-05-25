@@ -7,7 +7,7 @@ use crate::addressible::Addressible;
 const BIOS_SIZE: u64 = 512 * 1024;
 
 pub struct Bios {
-    data: Vec<u8>,
+    pub data: Vec<u8>,
 }
 
 impl Bios {

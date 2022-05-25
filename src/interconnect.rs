@@ -13,7 +13,7 @@ use crate::{
 };
 
 pub struct Interconnect {
-    bios: Bios,
+    pub bios: Bios,
     scratchpad: ScratchPad,
     ram: Ram,
     dma: Dma,
@@ -245,6 +245,8 @@ impl Interconnect {
     }
 
     pub fn tick(&mut self) {
+        self.gpu.tick();
+
         self.timers[0].tick(self.gpu.hblank, self.gpu.vblank, self.gpu.dotclock);
         self.timers[1].tick(self.gpu.hblank, self.gpu.vblank, self.gpu.dotclock);
         self.timers[2].tick(self.gpu.hblank, self.gpu.vblank, self.gpu.dotclock);

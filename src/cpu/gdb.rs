@@ -6,8 +6,13 @@ use gdbstub::target::ext::breakpoints::{
     Breakpoints, HwWatchpoint, SwBreakpoint, SwBreakpointOps, WatchKind,
 };
 use gdbstub::target::ext::exec_file::ExecFile;
+use gdbstub::target::ext::host_io::{
+    FsKind, HostIo, HostIoClose, HostIoErrno, HostIoError, HostIoFstat, HostIoOpen,
+    HostIoOpenFlags, HostIoOpenMode, HostIoPread, HostIoPwrite, HostIoReadlink, HostIoResult,
+    HostIoSetfs, HostIoStat, HostIoUnlink,
+};
 use gdbstub::target::ext::memory_map::MemoryMap;
-use gdbstub::target::{self, Target, TargetError};
+use gdbstub::target::{self, Target, TargetError, TargetResult};
 use gdbstub_arch::mips;
 use log::debug;
 
@@ -45,8 +50,157 @@ impl Target for Cpu {
     }
 
     #[inline(always)]
+    fn support_host_io(&mut self) -> Option<target::ext::host_io::HostIoOps<'_, Self>> {
+        Some(self)
+    }
+
+    //#[inline(always)]
+    //fn support_memory_map(&mut self) -> Option<target::ext::memory_map::MemoryMapOps<'_, Self>> {
+    //    Some(self)
+    //}
+
+    #[inline(always)]
     fn support_exec_file(&mut self) -> Option<target::ext::exec_file::ExecFileOps<'_, Self>> {
         Some(self)
+    }
+
+    fn guard_rail_single_step_gdb_behavior(&self) -> gdbstub::arch::SingleStepGdbBehavior {
+        gdbstub::arch::SingleStepGdbBehavior::Optional
+    }
+}
+
+impl HostIo for Cpu {
+    #[inline(always)]
+    fn support_open(&mut self) -> Option<target::ext::host_io::HostIoOpenOps<'_, Self>> {
+        Some(self)
+    }
+
+    #[inline(always)]
+    fn support_close(&mut self) -> Option<target::ext::host_io::HostIoCloseOps<'_, Self>> {
+        Some(self)
+    }
+
+    #[inline(always)]
+    fn support_pread(&mut self) -> Option<target::ext::host_io::HostIoPreadOps<'_, Self>> {
+        Some(self)
+    }
+
+    #[inline(always)]
+    fn support_pwrite(&mut self) -> Option<target::ext::host_io::HostIoPwriteOps<'_, Self>> {
+        Some(self)
+    }
+
+    #[inline(always)]
+    fn support_fstat(&mut self) -> Option<target::ext::host_io::HostIoFstatOps<'_, Self>> {
+        Some(self)
+    }
+
+    #[inline(always)]
+    fn support_unlink(&mut self) -> Option<target::ext::host_io::HostIoUnlinkOps<'_, Self>> {
+        Some(self)
+    }
+
+    #[inline(always)]
+    fn support_readlink(&mut self) -> Option<target::ext::host_io::HostIoReadlinkOps<'_, Self>> {
+        Some(self)
+    }
+
+    #[inline(always)]
+    fn support_setfs(&mut self) -> Option<target::ext::host_io::HostIoSetfsOps<'_, Self>> {
+        Some(self)
+    }
+}
+
+impl HostIoOpen for Cpu {
+    fn open(
+        &mut self,
+        filename: &[u8],
+        _flags: HostIoOpenFlags,
+        _mode: HostIoOpenMode,
+    ) -> HostIoResult<u32, Self> {
+        if filename == b"/test.rom" {
+            return Ok(0);
+        }
+
+        return Err(HostIoError::Errno(HostIoErrno::ENOENT));
+    }
+}
+
+impl HostIoClose for Cpu {
+    fn close(&mut self, _fd: u32) -> HostIoResult<(), Self> {
+        Ok(())
+    }
+}
+
+impl HostIoPread for Cpu {
+    fn pread<'a>(
+        &mut self,
+        fd: u32,
+        count: usize,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> HostIoResult<usize, Self> {
+        if fd == 0 {
+            return Ok(copy_range_to_buf(&self.inter.bios.data, offset, count, buf));
+        } else {
+            return Err(HostIoError::Errno(HostIoErrno::EBADF));
+        }
+    }
+}
+
+impl HostIoPwrite for Cpu {
+    fn pwrite(&mut self, _fd: u32, _offset: u32, _data: &[u8]) -> HostIoResult<u32, Self> {
+        return Err(HostIoError::Errno(HostIoErrno::EACCES));
+    }
+}
+
+impl HostIoFstat for Cpu {
+    fn fstat(&mut self, fd: u32) -> HostIoResult<HostIoStat, Self> {
+        if fd == 0 {
+            return Ok(HostIoStat {
+                st_dev: 0,
+                st_ino: 0,
+                st_mode: HostIoOpenMode::empty(),
+                st_nlink: 0,
+                st_uid: 0,
+                st_gid: 0,
+                st_rdev: 0,
+                st_size: self.inter.bios.data.len() as u64,
+                st_blksize: 0,
+                st_blocks: 0,
+                st_atime: 0,
+                st_mtime: 0,
+                st_ctime: 0,
+            });
+        } else {
+            return Err(HostIoError::Errno(HostIoErrno::EBADF));
+        }
+    }
+}
+
+impl HostIoUnlink for Cpu {
+    fn unlink(&mut self, _filename: &[u8]) -> HostIoResult<(), Self> {
+        Ok(())
+    }
+}
+
+impl HostIoReadlink for Cpu {
+    fn readlink<'a>(&mut self, filename: &[u8], buf: &mut [u8]) -> HostIoResult<usize, Self> {
+        if filename == b"/proc/1/exe" {
+            let exe = b"/test.rom";
+            return Ok(copy_to_buf(exe, buf));
+        } else if filename == b"/proc/1/cwd" {
+            let cwd = b"/";
+            return Ok(copy_to_buf(cwd, buf));
+        }
+
+        return Err(HostIoError::Errno(HostIoErrno::ENOENT));
+    }
+}
+
+impl HostIoSetfs for Cpu {
+    fn setfs(&mut self, _fs: FsKind) -> HostIoResult<(), Self> {
+        Ok(())
     }
 }
 
@@ -60,6 +214,26 @@ impl ExecFile for Cpu {
     ) -> target::TargetResult<usize, Self> {
         let filename = b"/test.rom";
         Ok(copy_range_to_buf(filename, offset, length, buf))
+    }
+}
+
+impl MemoryMap for Cpu {
+    fn memory_map_xml(
+        &self,
+        offset: u64,
+        length: usize,
+        buf: &mut [u8],
+    ) -> TargetResult<usize, Self> {
+        let memory_map = r#"<?xml version="1.0"?>
+<!DOCTYPE memory-map
+    PUBLIC "+//IDN gnu.org//DTD GDB Memory Map V1.0//EN"
+            "http://sourceware.org/gdb/gdb-memory-map.dtd">
+<memory-map>
+    <memory type="ram" start="0x0" length="0x100000000"/>
+</memory-map>"#
+            .trim()
+            .as_bytes();
+        Ok(copy_range_to_buf(memory_map, offset, length, buf))
     }
 }
 
@@ -182,8 +356,14 @@ impl SingleThreadBase for Cpu {
         start_addr: <Self::Arch as gdbstub::arch::Arch>::Usize,
         data: &mut [u8],
     ) -> target::TargetResult<(), Self> {
-        for (addr, val) in (start_addr..).zip(data.iter_mut()) {
-            *val = self.examine(addr);
+        for i in (0..data.len()).step_by(4) {
+            let word = self.examine::<u32>(start_addr + i as u32);
+
+            for j in 0..4 {
+                if i + j < data.len() {
+                    data[i + j] = (word >> (8 * j)) as u8;
+                }
+            }
         }
 
         Ok(())
@@ -229,10 +409,24 @@ impl target::ext::base::singlethread::SingleThreadResume for Cpu {
     }
 
     #[inline(always)]
+    fn support_single_step(
+        &mut self,
+    ) -> Option<target::ext::base::singlethread::SingleThreadSingleStepOps<'_, Self>> {
+        Some(self)
+    }
+
+    #[inline(always)]
     fn support_range_step(
         &mut self,
     ) -> Option<target::ext::base::singlethread::SingleThreadRangeSteppingOps<'_, Self>> {
         Some(self)
+    }
+}
+
+impl target::ext::base::singlethread::SingleThreadSingleStep for Cpu {
+    fn step(&mut self, _signal: Option<gdbstub::common::Signal>) -> Result<(), Self::Error> {
+        self.exec_mode = ExecMode::Step;
+        Ok(())
     }
 }
 
