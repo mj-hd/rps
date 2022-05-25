@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use log::warn;
+use log::{debug, warn};
 
 use crate::addressible::{AccessWidth, Addressible};
 
@@ -10,6 +10,7 @@ enum CdRomStatus {
     Reading,
 }
 
+#[derive(Clone, Copy, Debug)]
 enum CdRomIrq {
     ReadReady = 1,
     SecondOk = 2,
@@ -154,6 +155,8 @@ impl CdRom {
     }
 
     fn set_ie(&mut self, val: u8) {
+        debug!("CD-ROM set ie {:02x}", val);
+
         self.ie = val;
     }
 
@@ -162,7 +165,15 @@ impl CdRom {
     }
 
     fn set_irq(&mut self, val: u8) {
-        self.irq &= !(val & 0x1F);
+        debug!("CD-ROM set irq {:02x}", val);
+
+        let ack = val & 0b11;
+
+        if ack == 7 {
+            debug!("CD-ROM ack irq");
+            self.irq = 0;
+            self.response_fifo.clear();
+        }
 
         if val & 0x40 != 0 {
             self.parameter_fifo.clear();
@@ -170,10 +181,13 @@ impl CdRom {
     }
 
     fn raise_irq(&mut self, irq: CdRomIrq) {
+        debug!("CD-ROM raise irq {:?}", irq);
+
         self.irq |= 1 << (irq as u8);
     }
 
     fn set_parameter_fifo(&mut self, val: u8) {
+        debug!("CD-ROM parameter push {:02x}", val);
         self.parameter_fifo.push_back(val);
     }
 
@@ -187,10 +201,12 @@ impl CdRom {
     }
 
     fn response_fifo(&mut self) -> u8 {
+        debug!("CD-ROM response pop {:02x}", self.response_fifo[0]);
         self.response_fifo.pop_front().unwrap_or(0)
     }
 
     fn data_fifo(&mut self) -> u8 {
+        debug!("CD-ROM data pop {:02x}", self.data_fifo[0]);
         self.data_fifo.pop_front().unwrap_or(0)
     }
 
@@ -228,11 +244,13 @@ impl CdRom {
     }
 
     fn get_stat(&mut self) {
+        debug!("CD-ROM command getStat");
         self.response_fifo.push_back(self.stat());
         self.raise_irq(CdRomIrq::FirstOk);
     }
 
     fn init(&mut self) {
+        debug!("CD-ROM command init");
         self.double_speed = false;
         self.raw_sector = false;
         self.response_fifo.push_back(self.stat());
@@ -244,6 +262,8 @@ impl CdRom {
 
     fn set_mode(&mut self) {
         let mode = self.parameter_fifo[0];
+
+        debug!("CD-ROM command setMode {:02x}", mode);
 
         self.double_speed = mode & 0x80 != 0;
         self.raw_sector = mode & 0x20 != 0;
@@ -259,6 +279,8 @@ impl CdRom {
             sector: self.parameter_fifo[2],
         };
 
+        debug!("CD-ROM command setLoc {:?}", addr);
+
         self.seek_position = Some(addr);
 
         self.response_fifo.push_back(self.stat());
@@ -266,6 +288,7 @@ impl CdRom {
     }
 
     fn read_n(&mut self) {
+        debug!("CD-ROM command readN");
         self.response_fifo.push_back(self.stat());
         self.raise_irq(CdRomIrq::FirstOk);
         // TODO: read then int
@@ -276,6 +299,8 @@ impl CdRom {
     }
 
     fn seek_l(&mut self) {
+        debug!("CD-ROM command seekL");
+
         if let Some(position) = self.seek_position {
             self.current_position = position;
         }
@@ -288,6 +313,8 @@ impl CdRom {
     }
 
     fn test(&mut self) {
+        debug!("CD-ROM command test 0x{:02x}", self.parameter_fifo[0]);
+
         match self.parameter_fifo.pop_front() {
             Some(0x20) => self.test_version(),
             Some(n) => warn!("unsupported CD-ROM test func {:02x}", n),
@@ -300,6 +327,7 @@ impl CdRom {
         self.response_fifo.push_back(0x09);
         self.response_fifo.push_back(0x12);
         self.response_fifo.push_back(0xC2);
+        self.raise_irq(CdRomIrq::FirstOk);
     }
 
     fn get_id(&mut self) {
@@ -307,7 +335,7 @@ impl CdRom {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct Mss {
     min: u8,
     sec: u8,

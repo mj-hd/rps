@@ -1,4 +1,4 @@
-use log::{debug, trace};
+use log::debug;
 
 use crate::addressible::Addressible;
 
@@ -144,9 +144,7 @@ impl Timer {
 
         if increment {
             self.counter = self.counter.wrapping_add(1);
-            trace!("timer{} increment {}", self.index, self.counter);
             if !self.irq_toggle {
-                trace!("timer{} irq reset", self.index);
                 self.n_irq = true;
             }
         }

@@ -1,5 +1,8 @@
+use log::debug;
+
 use crate::addressible::Addressible;
 
+#[derive(Debug, Clone, Copy)]
 pub enum Irq {
     VBlank = 0,
     Gpu = 1,
@@ -18,7 +21,7 @@ pub struct Interrupts {
     stat: u32,
     mask: u32,
 
-    prev_stat: u32,
+    prev_pulse: u32,
 }
 
 impl Interrupts {
@@ -26,7 +29,7 @@ impl Interrupts {
         Self {
             stat: 0,
             mask: 0,
-            prev_stat: 0,
+            prev_pulse: 0,
         }
     }
 
@@ -50,9 +53,7 @@ impl Interrupts {
         }
     }
 
-    pub fn tick(&mut self) {
-        self.prev_stat = self.stat;
-    }
+    pub fn tick(&mut self) {}
 
     pub fn check(&mut self) -> bool {
         let irq = self.stat & self.mask;
@@ -61,14 +62,19 @@ impl Interrupts {
     }
 
     fn ack(&mut self, val: u32) {
-        self.stat &= !val;
+        debug!("irq ack {:08x}", val);
+        self.stat &= val;
     }
 
-    pub fn raise(&mut self, irq: Irq) {
+    pub fn set(&mut self, irq: Irq, val: bool) {
         let mask = 1 << (irq as u32);
 
-        if self.prev_stat & mask == 0 {
+        if val && (self.prev_pulse & mask == 0) {
+            debug!("irq raised {:?}", irq);
             self.stat |= mask;
         }
+
+        self.prev_pulse &= !mask;
+        self.prev_pulse |= (val as u32) * mask;
     }
 }

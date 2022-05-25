@@ -43,7 +43,6 @@ pub struct Gpu {
     display_line_start: u16,
     display_line_end: u16,
 
-    // TODO: タイミングをちゃんと実装したい
     pub hblank: bool,
     pub vblank: bool,
     pub dotclock: bool,
@@ -180,15 +179,6 @@ impl Gpu {
         if self.cycles == 0 && self.scanlines == 0 {
             self.renderer.render().unwrap();
         }
-
-        trace!(
-            "cycles: {}, scanlines: {}, hblank: {}, vblank: {}, dotclock: {}",
-            self.cycles,
-            self.scanlines,
-            self.hblank,
-            self.vblank,
-            self.dotclock
-        );
     }
 
     fn status(&self) -> u32 {

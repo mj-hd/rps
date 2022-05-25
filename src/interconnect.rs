@@ -251,33 +251,13 @@ impl Interconnect {
         self.timers[1].tick(self.gpu.hblank, self.gpu.vblank, self.gpu.dotclock);
         self.timers[2].tick(self.gpu.hblank, self.gpu.vblank, self.gpu.dotclock);
 
-        if self.gpu.vblank {
-            self.interrupts.raise(Irq::VBlank);
-        }
-
-        if self.gpu.interrupt {
-            self.interrupts.raise(Irq::Gpu);
-        }
-
-        if self.cdrom.check_irq() {
-            self.interrupts.raise(Irq::CdRom);
-        }
-
-        if self.dma.check_irq() {
-            self.interrupts.raise(Irq::Dma);
-        }
-
-        if !self.timers[0].n_irq {
-            self.interrupts.raise(Irq::Tmr0);
-        }
-
-        if !self.timers[1].n_irq {
-            self.interrupts.raise(Irq::Tmr1);
-        }
-
-        if !self.timers[2].n_irq {
-            self.interrupts.raise(Irq::Tmr2);
-        }
+        self.interrupts.set(Irq::VBlank, self.gpu.vblank);
+        self.interrupts.set(Irq::Gpu, self.gpu.interrupt);
+        self.interrupts.set(Irq::CdRom, self.cdrom.check_irq());
+        self.interrupts.set(Irq::Dma, self.dma.check_irq());
+        self.interrupts.set(Irq::Tmr0, !self.timers[0].n_irq);
+        self.interrupts.set(Irq::Tmr1, !self.timers[1].n_irq);
+        self.interrupts.set(Irq::Tmr2, !self.timers[2].n_irq);
 
         self.interrupts.tick();
     }
