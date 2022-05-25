@@ -23,7 +23,9 @@ pub enum ExecMode {
     RangeStep(u32, u32),
 }
 
+#[derive(Debug)]
 enum Exception {
+    Irq = 0x0,
     LoadAddressError = 0x4,
     StoreAddressError = 0x5,
     SysCall = 0x8,
@@ -43,13 +45,14 @@ pub struct Cpu {
     branch: bool,
     delay_slot: bool,
 
-    // COP0
-    pub sr: u32,
     pub hi: u32,
     pub lo: u32,
     current_pc: u32,
-    pub cause: u32,
-    pub epc: u32,
+
+    // COP0
+    pub sr: u32,    // r12
+    pub cause: u32, // r13
+    pub epc: u32,   // r14
 
     pub exec_mode: ExecMode,
     pub breakpoints: Vec<u32>,
@@ -97,6 +100,11 @@ impl Cpu {
         self.out_regs[0] = 0;
     }
 
+    fn set_cause(&mut self, val: u32) {
+        self.cause &= !0x300;
+        self.cause |= val & 0x300;
+    }
+
     pub fn run(&mut self, mut poll_incoming_data: impl FnMut() -> bool) -> RunEvent {
         match self.exec_mode {
             ExecMode::Continue => {
@@ -142,6 +150,8 @@ impl Cpu {
     pub fn step(&mut self) -> Option<Event> {
         self.event = None;
 
+        self.inter.tick();
+
         self.current_pc = self.pc;
 
         if self.current_pc % 4 != 0 {
@@ -161,7 +171,12 @@ impl Cpu {
         self.delay_slot = self.branch;
         self.branch = false;
 
-        self.decode_and_execute(instruction);
+        if self.check_irq() {
+            self.cause |= 1 << 10;
+            self.exception(Exception::Irq);
+        } else {
+            self.decode_and_execute(instruction);
+        }
 
         self.regs = self.out_regs;
 
@@ -211,7 +226,12 @@ impl Cpu {
         self.branch = true;
     }
 
+    fn check_irq(&mut self) -> bool {
+        self.sr & 1 != 0 && self.inter.interrupts.check()
+    }
+
     fn exception(&mut self, cause: Exception) {
+        debug!("exception: {:?}", cause);
         let handler = match self.sr & (1 << 22) != 0 {
             true => 0xbfc00180,
             false => 0x80000080,
@@ -413,7 +433,7 @@ impl Cpu {
                 }
             }
             12 => self.sr = v,
-            13 => self.cause = v,
+            13 => self.set_cause(v),
             14 => self.epc = v,
             n => panic!("Unhandled cop0 register: {:08x}", n),
         }

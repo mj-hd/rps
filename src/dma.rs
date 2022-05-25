@@ -38,7 +38,7 @@ impl Dma {
         self.control = val;
     }
 
-    fn irq(&self) -> bool {
+    pub fn check_irq(&self) -> bool {
         let channel_irq = self.channel_irq_flags & self.channel_irq_en;
         self.force_irq || (self.irq_en && channel_irq != 0)
     }
@@ -51,7 +51,7 @@ impl Dma {
         r |= (self.channel_irq_en as u32) << 16;
         r |= (self.irq_en as u32) << 23;
         r |= (self.channel_irq_flags as u32) << 24;
-        r |= (self.irq() as u32) << 31;
+        r |= (self.check_irq() as u32) << 31;
 
         r
     }

@@ -24,7 +24,7 @@ pub struct Gpu {
     display_depth: DisplayDepth,
     interlaced: bool,
     display_disabled: bool,
-    interrupt: bool,
+    pub interrupt: bool,
     dma_direction: DmaDirection,
     rectangle_texture_x_flip: bool,
     rectangle_texture_y_flip: bool,
@@ -42,6 +42,11 @@ pub struct Gpu {
     display_horiz_end: u16,
     display_line_start: u16,
     display_line_end: u16,
+
+    // TODO: タイミングをちゃんと実装したい
+    pub hblank: bool,
+    pub vblank: bool,
+    pub dotclock: bool,
 
     gp0_mode: Gp0Mode,
     gp0_words_remaining: u32,
@@ -93,6 +98,9 @@ impl Gpu {
             gp0_command_method: |&mut _| {},
             gp0_mode: Gp0Mode::Command,
             renderer,
+            hblank: false,
+            vblank: false,
+            dotclock: false,
         }
     }
 

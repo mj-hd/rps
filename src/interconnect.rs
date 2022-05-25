@@ -3,10 +3,13 @@ use log::{trace, warn};
 use crate::{
     addressible::{AccessWidth, Addressible},
     bios::Bios,
+    cdrom::CdRom,
     dma::{Direction, Dma, Port, Step, Sync},
     gpu::gpu::Gpu,
+    interrupts::{Interrupts, Irq},
     ram::Ram,
     scratchpad::ScratchPad,
+    timer::Timer,
 };
 
 pub struct Interconnect {
@@ -15,6 +18,9 @@ pub struct Interconnect {
     ram: Ram,
     dma: Dma,
     gpu: Gpu,
+    cdrom: CdRom,
+    timers: [Timer; 3],
+    pub interrupts: Interrupts,
 }
 
 impl Interconnect {
@@ -25,10 +31,13 @@ impl Interconnect {
             ram: Ram::new(),
             dma: Dma::new(),
             gpu,
+            cdrom: CdRom::new(None),
+            timers: [Timer::new(0), Timer::new(1), Timer::new(2)],
+            interrupts: Interrupts::new(),
         }
     }
 
-    pub fn load<T: Addressible>(&self, abs_addr: u32) -> T {
+    pub fn load<T: Addressible>(&mut self, abs_addr: u32) -> T {
         let addr = map::mask_region(abs_addr);
 
         trace!(
@@ -76,8 +85,7 @@ impl Interconnect {
         }
 
         if let Some(offset) = map::IRQ_CONTROL.contains(addr) {
-            warn!("IRQ control read {:x}", offset);
-            return Addressible::from_u32(0);
+            return self.interrupts.load(offset);
         }
 
         if let Some(offset) = map::DMA.contains(addr) {
@@ -89,13 +97,19 @@ impl Interconnect {
         }
 
         if let Some(offset) = map::CDROM.contains(addr) {
-            warn!("CDROM read {}", offset);
-            return Addressible::from_u32(0);
+            return self.cdrom.load(offset);
         }
 
-        if let Some(offset) = map::TIMERS.contains(addr) {
-            warn!("TIMERS read {}", offset);
-            return Addressible::from_u32(0);
+        if let Some(offset) = map::TIMER_0.contains(addr) {
+            return self.timers[0].load(offset);
+        }
+
+        if let Some(offset) = map::TIMER_1.contains(addr) {
+            return self.timers[1].load(offset);
+        }
+
+        if let Some(offset) = map::TIMER_2.contains(addr) {
+            return self.timers[2].load(offset);
         }
 
         if let Some(offset) = map::JOYPAD.contains(addr) {
@@ -171,8 +185,7 @@ impl Interconnect {
         }
 
         if let Some(offset) = map::IRQ_CONTROL.contains(addr) {
-            warn!("IRQ control: {:x} <- {:08x}", offset, val.as_u32());
-            return;
+            return self.interrupts.store(offset, val);
         }
 
         if let Some(offset) = map::DMA.contains(addr) {
@@ -184,8 +197,7 @@ impl Interconnect {
         }
 
         if let Some(offset) = map::CDROM.contains(addr) {
-            warn!("CDROM write {} {}", offset, val.as_u32());
-            return;
+            return self.cdrom.store(offset, val);
         }
 
         if let Some(offset) = map::SPU.contains(addr) {
@@ -203,9 +215,16 @@ impl Interconnect {
             return;
         }
 
-        if let Some(offset) = map::TIMERS.contains(addr) {
-            warn!("TIMER write {} {}", offset, val.as_u32());
-            return;
+        if let Some(offset) = map::TIMER_0.contains(addr) {
+            return self.timers[0].store(offset, val);
+        }
+
+        if let Some(offset) = map::TIMER_1.contains(addr) {
+            return self.timers[1].store(offset, val);
+        }
+
+        if let Some(offset) = map::TIMER_2.contains(addr) {
+            return self.timers[2].store(offset, val);
         }
 
         if let Some(offset) = map::EXPANSION_2.contains(addr) {
@@ -223,6 +242,42 @@ impl Interconnect {
             T::width(),
             abs_addr
         );
+    }
+
+    pub fn tick(&mut self) {
+        self.timers[0].tick(self.gpu.hblank, self.gpu.vblank, self.gpu.dotclock);
+        self.timers[1].tick(self.gpu.hblank, self.gpu.vblank, self.gpu.dotclock);
+        self.timers[2].tick(self.gpu.hblank, self.gpu.vblank, self.gpu.dotclock);
+
+        if self.gpu.vblank {
+            self.interrupts.raise(Irq::VBlank);
+        }
+
+        if self.gpu.interrupt {
+            self.interrupts.raise(Irq::Gpu);
+        }
+
+        if self.cdrom.check_irq() {
+            self.interrupts.raise(Irq::CdRom);
+        }
+
+        if self.dma.check_irq() {
+            self.interrupts.raise(Irq::Dma);
+        }
+
+        if !self.timers[0].n_irq {
+            self.interrupts.raise(Irq::Tmr0);
+        }
+
+        if !self.timers[1].n_irq {
+            self.interrupts.raise(Irq::Tmr1);
+        }
+
+        if !self.timers[2].n_irq {
+            self.interrupts.raise(Irq::Tmr2);
+        }
+
+        self.interrupts.tick();
     }
 
     fn dma_reg<T: Addressible>(&self, offset: u32) -> T {
@@ -436,7 +491,9 @@ mod map {
     pub const RAM_SIZE: Range = Range(0x1F801060, 4);
     pub const IRQ_CONTROL: Range = Range(0x1F801070, 8);
     pub const DMA: Range = Range(0x1F801080, 0x80);
-    pub const TIMERS: Range = Range(0x1F801100, 48);
+    pub const TIMER_0: Range = Range(0x1F801100, 12);
+    pub const TIMER_1: Range = Range(0x1F801110, 12);
+    pub const TIMER_2: Range = Range(0x1F801120, 12);
     pub const CDROM: Range = Range(0x1F801800, 4);
     pub const GPU: Range = Range(0x1F801810, 16);
     pub const SPU: Range = Range(0x1F801C00, 640);
