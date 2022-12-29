@@ -1,4 +1,4 @@
-use log::{trace, warn};
+use log::{debug, trace, warn};
 
 use crate::{
     addressible::{AccessWidth, Addressible},
@@ -127,11 +127,11 @@ impl Gpu {
             panic!("Unhandled {:?} GPU store", T::width());
         }
 
-        let r = match offset {
+        match offset {
             0 => self.gp0(val.as_u32()),
             4 => self.gp1(val.as_u32()),
             _ => unreachable!(),
-        };
+        }
     }
 
     pub fn tick(&mut self) {
@@ -167,7 +167,7 @@ impl Gpu {
 
         let visible_lines = match self.vres {
             VerticalRes::Y240Lines => 240,
-            VerticalRes::Y480Lines => 480,
+            VerticalRes::Y480Lines => 240, // TODO: インターレース時の解像度を確認する
         };
 
         self.vblank = self.scanlines >= visible_lines;
@@ -229,14 +229,21 @@ impl Gpu {
     pub fn gp0(&mut self, val: u32) {
         if self.gp0_words_remaining == 0 {
             let opcode = (val >> 24) & 0xFF;
-
             let (len, method) = match opcode {
                 0x00 => (1, Gpu::gp0_nop as fn(&mut Gpu)),
                 0x01 => (1, Gpu::gp0_clear_cache as fn(&mut Gpu)),
+                0x02 => (3, Gpu::gp0_fill_rect as fn(&mut Gpu)),
                 0x28 => (5, Gpu::gp0_quad_mono_opaque as fn(&mut Gpu)),
                 0x2C => (9, Gpu::gp0_quad_texture_blend_opaque as fn(&mut Gpu)),
+                0x2D => (9, Gpu::gp0_quad_texture_blend_opaque as fn(&mut Gpu)),
+                0x2E => (9, Gpu::gp0_quad_texture_blend_opaque as fn(&mut Gpu)),
+                0x2F => (9, Gpu::gp0_quad_texture_blend_opaque as fn(&mut Gpu)),
                 0x30 => (6, Gpu::gp0_triangle_shaded_opaque as fn(&mut Gpu)),
                 0x38 => (8, Gpu::gp0_quad_shaded_opaque as fn(&mut Gpu)),
+                0x64 => (4, Gpu::gp0_textured_rect as fn(&mut Gpu)),
+                0x65 => (4, Gpu::gp0_textured_rect as fn(&mut Gpu)),
+                0x66 => (4, Gpu::gp0_textured_rect as fn(&mut Gpu)),
+                0x67 => (4, Gpu::gp0_textured_rect as fn(&mut Gpu)),
                 0xA0 => (3, Gpu::gp0_image_load as fn(&mut Gpu)),
                 0xC0 => (3, Gpu::gp0_image_store as fn(&mut Gpu)),
                 0xE1 => (1, Gpu::gp0_draw_mode as fn(&mut Gpu)),
@@ -273,13 +280,35 @@ impl Gpu {
     }
 
     // GP0(0x00) nop
-    fn gp0_nop(&mut self) {}
+    fn gp0_nop(&mut self) {
+        debug!("GPU gp0 nop");
+    }
 
     // GP0(0x01) clear cache
-    fn gp0_clear_cache(&mut self) {}
+    fn gp0_clear_cache(&mut self) {
+        debug!("GPU gp0 clear cache");
+    }
+
+    // GP0(0x02) fill rect
+    fn gp0_fill_rect(&mut self) {
+        debug!("GPU gp0 fill rect");
+
+        let top_left = Position::from_gp0(self.gp0_command[1]);
+        let size = Position::from_gp0(self.gp0_command[2]);
+        let color = Color::from_gp0(self.gp0_command[0]);
+
+        let top_left = Position(top_left.0 & 0x3F0, top_left.1 & 0x1FF);
+        let size = Position(((size.0 & 0x3FF) + 0x0F) & !0x0F, size.1 & 0x1FF);
+        let right_bottom = top_left.inflate(size.0, size.1).limit(0x400, 0x200);
+        let size = right_bottom.deflate(top_left.0, top_left.1);
+
+        self.renderer.fill_rect(color, top_left, size);
+    }
 
     // GP0(0x28) monochrome opaque quad
     fn gp0_quad_mono_opaque(&mut self) {
+        debug!("GPU gp0 quad mono opaque");
+
         let positions = [
             Position::from_gp0(self.gp0_command[1]),
             Position::from_gp0(self.gp0_command[2]),
@@ -294,6 +323,8 @@ impl Gpu {
 
     // GP0(0x2C) texture blend opaque qud
     fn gp0_quad_texture_blend_opaque(&mut self) {
+        debug!("GPU gp0 quad texture blend opaque");
+
         let positions = [
             Position::from_gp0(self.gp0_command[1]),
             Position::from_gp0(self.gp0_command[3]),
@@ -309,6 +340,8 @@ impl Gpu {
 
     // GP0(0x30) shaded opaque triangle
     fn gp0_triangle_shaded_opaque(&mut self) {
+        debug!("GPU gp0 triangle shaded opaque");
+
         let positions = [
             Position::from_gp0(self.gp0_command[1]),
             Position::from_gp0(self.gp0_command[3]),
@@ -326,6 +359,8 @@ impl Gpu {
 
     // GP0(0x38) shaded opaque quad
     fn gp0_quad_shaded_opaque(&mut self) {
+        debug!("GPU gp0 shaded opaque");
+
         let positions = [
             Position::from_gp0(self.gp0_command[1]),
             Position::from_gp0(self.gp0_command[3]),
@@ -343,6 +378,25 @@ impl Gpu {
         self.renderer.push_quad(positions, colors);
     }
 
+    // GP0(0x64) textured rect
+    fn gp0_textured_rect(&mut self) {
+        debug!("GPU gp0 textured rect");
+
+        let top_left = Position::from_gp0(self.gp0_command[1]);
+        let size = Position::from_gp0(self.gp0_command[3]);
+
+        let positions = [
+            top_left,
+            top_left.inflate(size.0, 0),
+            top_left.inflate(0, size.1),
+            top_left.inflate(size.0, size.1),
+        ];
+
+        let colors = [Color(0x80, 0x00, 0x00); 4];
+
+        self.renderer.push_quad(positions, colors)
+    }
+
     // GP0(0xA0) image load
     fn gp0_image_load(&mut self) {
         let res = self.gp0_command[2];
@@ -356,6 +410,8 @@ impl Gpu {
         self.gp0_words_remaining = imgsize / 2;
 
         self.gp0_mode = Gp0Mode::ImageLoad;
+
+        debug!("GPU gp0 image load ({}, {})", width, height);
     }
 
     // GP0(0xC0) image store
@@ -365,12 +421,15 @@ impl Gpu {
         let width = res & 0xFFFF;
         let height = res >> 16;
 
+        debug!("GPU gp0 res ({}, {})", width, height);
+
         warn!("Unhandled image store: {}x{}", width, height);
     }
 
     // GP0(0xE1) draw command
     fn gp0_draw_mode(&mut self) {
         let val = self.gp0_command.val1();
+
         self.page_base_x = (val & 0xF) as u8;
         self.page_base_y = ((val >> 4) & 1) as u8;
         self.semi_transparency = ((val >> 5) & 3) as u8;
@@ -387,44 +446,71 @@ impl Gpu {
         self.texture_disable = ((val >> 11) & 1) != 0;
         self.rectangle_texture_x_flip = ((val >> 12) & 1) != 0;
         self.rectangle_texture_y_flip = ((val >> 13) & 1) != 0;
+
+        debug!("GPU gp0 draw mode {:08x}", val);
     }
 
     // GP0(0xE2) set texture window
     fn gp0_texture_window(&mut self) {
         let val = self.gp0_command.val1();
+
         self.texture_window_x_mask = (val & 0x1F) as u8;
         self.texture_window_y_mask = ((val >> 5) & 0x1F) as u8;
         self.texture_window_x_offset = ((val >> 10) & 0x1F) as u8;
         self.texture_window_y_offset = ((val >> 15) & 0x1F) as u8;
+
+        debug!(
+            "GPU gp0 texture window mask:({}, {}), offset:({}, {})",
+            self.texture_window_x_mask,
+            self.texture_window_y_mask,
+            self.texture_window_x_offset,
+            self.texture_window_y_offset
+        );
     }
 
     // GP0(0xE3) set drawing area top left
     fn gp0_drawing_area_top_left(&mut self) {
         let val = self.gp0_command.val1();
+
         self.drawing_area_top = ((val >> 10) & 0x3FF) as u16;
         self.drawing_area_left = (val & 0x3FF) as u16;
+
+        debug!(
+            "GPU gp0 drawing area top left ({}, {})",
+            self.drawing_area_left, self.drawing_area_top,
+        );
     }
 
     // GP0(0xE4) set drawing area bottom right
     fn gp0_drawing_area_bottom_right(&mut self) {
         let val = self.gp0_command.val1();
+
         self.drawing_area_bottom = ((val >> 10) & 0x3FF) as u16;
         self.drawing_area_right = (val & 0x3FF) as u16;
+
+        debug!(
+            "GPU gp0 drawing area bottom right ({}, {})",
+            self.drawing_area_right, self.drawing_area_bottom,
+        );
     }
 
     // GP0(0xE5) set drawing offset
     fn gp0_drawing_offset(&mut self) {
         let val = self.gp0_command.val1();
-        let x = (val & 0x7FF) as u16;
-        let y = ((val >> 11) & 0x7FF) as u16;
+        let x = ((((val & 0x7FF) as u16) << 5) as i16) >> 5;
+        let y = (((((val >> 11) & 0x7FF) as u16) << 5) as i16) >> 5;
 
-        self.renderer
-            .set_draw_offset(((x << 5) as i16) >> 5, ((y << 5) as i16) >> 5);
+        debug!("GPU gp0 drawing offset ({}, {})", x, y);
+
+        self.renderer.set_draw_offset(x, y);
     }
 
     // GP0(0xE6) set mask bit setting
     fn gp0_mask_bit_setting(&mut self) {
         let val = self.gp0_command.val1();
+
+        debug!("GPU gp0 set mask bit setting {:08x}", val);
+
         self.force_set_mask_bit = (val & 1) != 0;
         self.preserve_masked_pixels = (val & 2) != 0;
     }
@@ -448,6 +534,8 @@ impl Gpu {
 
     // GP1(0x00) soft reset
     fn gp1_reset(&mut self, _: u32) {
+        debug!("GPU gp1 reset");
+
         self.interrupt = false;
 
         self.page_base_x = 0;
@@ -494,6 +582,7 @@ impl Gpu {
 
     // GP1(0x01) reset command buffer
     fn gp1_reset_command_buffer(&mut self, _: u32) {
+        debug!("GPU gp1 reset command buffer");
         self.gp0_command.clear();
         self.gp0_words_remaining = 0;
         self.gp0_mode = Gp0Mode::Command;
@@ -501,11 +590,13 @@ impl Gpu {
 
     // GP1(0x02) acknowledge interrupt
     fn gp1_acknowledge_irq(&mut self, _: u32) {
+        debug!("GPU gp1 acknowledge interrupt");
         self.interrupt = false;
     }
 
     // GP1(0x03) display enable
     fn gp1_display_enable(&mut self, val: u32) {
+        debug!("GPU gp1 display enable");
         self.display_disabled = val & 1 != 0;
     }
 
@@ -518,28 +609,42 @@ impl Gpu {
             3 => DmaDirection::VramToCpu,
             _ => unreachable!(),
         };
+        debug!("GPU gp1 dma direction {:?}", self.dma_direction);
     }
 
     // GP1(0x05) display vram start
     fn gp1_display_vram_start(&mut self, val: u32) {
         self.display_vram_x_start = (val & 0x3FE) as u16;
         self.display_vram_y_start = ((val >> 10) & 0x1FF) as u16;
+        debug!(
+            "GPU gp1 display vram start ({}, {})",
+            self.display_vram_x_start, self.display_vram_y_start
+        );
     }
 
     // GP1(0x06) display horizontal range
     fn gp1_display_horizontal_range(&mut self, val: u32) {
         self.display_horiz_start = (val & 0xFFF) as u16;
         self.display_horiz_end = ((val >> 12) & 0xFFF) as u16;
+        debug!(
+            "GPU gp1 display horizontal range [{}, {}]",
+            self.display_horiz_start, self.display_horiz_end
+        );
     }
 
     // GP1(0x07) display vertical range
     fn gp1_display_vertical_range(&mut self, val: u32) {
         self.display_line_start = (val & 0x3FF) as u16;
         self.display_line_end = ((val >> 10) & 0x3FF) as u16;
+        debug!(
+            "GPU gp1 display vertical range [{}, {}]",
+            self.display_line_start, self.display_line_end
+        );
     }
 
     // GP1(0x08) display mode
     fn gp1_display_mode(&mut self, val: u32) {
+        debug!("GPU gp1 display mode {:08x}", val);
         let hr1 = (val & 3) as u8;
         let hr2 = ((val >> 6) & 1) as u8;
 
@@ -628,7 +733,7 @@ enum DisplayDepth {
     D24Bits = 1,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 enum DmaDirection {
     Off = 0,
     Fifo = 1,

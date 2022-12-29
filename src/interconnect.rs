@@ -1,4 +1,4 @@
-use log::{trace, warn};
+use log::{debug, trace, warn};
 
 use crate::{
     addressible::{AccessWidth, Addressible},
@@ -7,6 +7,7 @@ use crate::{
     dma::{Direction, Dma, Port, Step, Sync},
     gpu::gpu::Gpu,
     interrupts::{Interrupts, Irq},
+    joypad::Joypad,
     ram::Ram,
     scratchpad::ScratchPad,
     timer::Timer,
@@ -19,19 +20,21 @@ pub struct Interconnect {
     dma: Dma,
     gpu: Gpu,
     cdrom: CdRom,
+    joypad: Joypad,
     timers: [Timer; 3],
     pub interrupts: Interrupts,
 }
 
 impl Interconnect {
-    pub fn new(bios: Bios, gpu: Gpu) -> Interconnect {
+    pub fn new(bios: Bios, gpu: Gpu, rom: Option<Vec<u8>>) -> Interconnect {
         Interconnect {
             bios,
             scratchpad: ScratchPad::new(),
             ram: Ram::new(),
             dma: Dma::new(),
             gpu,
-            cdrom: CdRom::new(None),
+            cdrom: CdRom::new(rom),
+            joypad: Joypad::new(),
             timers: [Timer::new(0), Timer::new(1), Timer::new(2)],
             interrupts: Interrupts::new(),
         }
@@ -72,7 +75,7 @@ impl Interconnect {
                 4 => {
                     return Addressible::from_u32(0x1f800200);
                 }
-                _ => warn!("Unhandled write to MEM_CONTROL register"),
+                _ => warn!("Unhandled read to MEM_CONTROL register"),
             }
         }
 
@@ -113,8 +116,7 @@ impl Interconnect {
         }
 
         if let Some(offset) = map::JOYPAD.contains(addr) {
-            warn!("JOYPAD read {}", offset);
-            return Addressible::from_u32(0);
+            return self.joypad.load(offset);
         }
 
         if let Some(offset) = map::SIO.contains(addr) {
@@ -171,6 +173,9 @@ impl Interconnect {
                         panic!("Bad expansion 2 base address: 0x{:08x}", val.as_u32());
                     }
                 }
+                20 => {
+                    warn!("MEM_CONTROL write {:08X}", val.as_u32())
+                }
                 _ => warn!("Unhandled write to MEM_CONTROL register"),
             }
             return;
@@ -206,8 +211,7 @@ impl Interconnect {
         }
 
         if let Some(offset) = map::JOYPAD.contains(addr) {
-            warn!("JOYPAD write {} {}", offset, val.as_u32());
-            return;
+            return self.joypad.store(offset, val);
         }
 
         if let Some(offset) = map::SIO.contains(addr) {
@@ -228,7 +232,17 @@ impl Interconnect {
         }
 
         if let Some(offset) = map::EXPANSION_2.contains(addr) {
-            warn!("EXPANSION 2 write {}", offset);
+            match offset {
+                0x23 => debug!("{:?}", (val.as_u32() as u8) as char),
+                0x2B => debug!("{:?}", (val.as_u32() as u8) as char),
+                0x41 | 0x42 => debug!("BOOT STATUS: {:02x}", val.as_u32() as u8),
+                0x70 => debug!("BOOT STATUS2: {:02x}", val.as_u32() as u8),
+                _ => warn!(
+                    "EXPANSION 2 write {:02x} = {:02x}",
+                    offset,
+                    val.as_u32() as u8
+                ),
+            }
             return;
         }
 
@@ -245,7 +259,9 @@ impl Interconnect {
     }
 
     pub fn tick(&mut self) {
+        self.cdrom.tick();
         self.gpu.tick();
+        self.joypad.tick();
 
         self.timers[0].tick(self.gpu.hblank, self.gpu.vblank, self.gpu.dotclock);
         self.timers[1].tick(self.gpu.hblank, self.gpu.vblank, self.gpu.dotclock);
@@ -375,6 +391,11 @@ impl Interconnect {
                             1 => 0xFFFFFF,
                             _ => addr.wrapping_sub(4) & 0x1FFFFF,
                         },
+                        Port::Gpu => {
+                            //warn!("Unhandled DMA source port GPU");
+                            0
+                        }
+                        Port::CdRom => self.cdrom.load(2),
                         _ => panic!("Unhandled DMA source port {}", port as u8),
                     };
 

@@ -1,6 +1,8 @@
-use log::{debug, trace, warn};
+use std::{thread, time::Duration};
 
-use crate::{addressible::Addressible, interconnect::Interconnect};
+use log::{debug, info, trace, warn};
+
+use crate::{addressible::Addressible, gte::Gte, interconnect::Interconnect};
 
 use super::{instruction::Instruction, RegisterIndex};
 
@@ -45,6 +47,7 @@ pub struct Cpu {
     load: (RegisterIndex, u32),
     branch: bool,
     delay_slot: bool,
+    stalls: u16,
 
     pub hi: u32,
     pub lo: u32,
@@ -55,10 +58,15 @@ pub struct Cpu {
     pub cause: u32, // r13
     pub epc: u32,   // r14
 
+    // COP2(GTE)
+    pub gte: Gte,
+
     pub exec_mode: ExecMode,
     pub breakpoints: Vec<u32>,
     pub watchpoints: Vec<u32>,
     event: Option<Event>,
+
+    tty_buffer: String,
 }
 
 impl Cpu {
@@ -84,10 +92,13 @@ impl Cpu {
             epc: 0,
             branch: false,
             delay_slot: false,
+            gte: Gte::new(),
             exec_mode: ExecMode::Continue,
             breakpoints: vec![],
             watchpoints: vec![],
             event: None,
+            tty_buffer: String::new(),
+            stalls: 0,
         }
     }
 
@@ -121,11 +132,18 @@ impl Cpu {
                     cycles += 1;
 
                     if let Some(event) = self.step() {
+                        if event == Event::DoneStep {
+                            continue;
+                        }
                         break RunEvent::Event(event);
                     }
                 }
             }
-            ExecMode::Step => RunEvent::Event(self.step().unwrap_or(Event::DoneStep)),
+            ExecMode::Step => loop {
+                if let Some(event) = self.step() {
+                    break RunEvent::Event(event);
+                }
+            },
             ExecMode::RangeStep(start, end) => {
                 let mut cycles = 0;
                 loop {
@@ -138,6 +156,9 @@ impl Cpu {
                     cycles += 1;
 
                     if let Some(event) = self.step() {
+                        if event == Event::DoneStep {
+                            continue;
+                        }
                         break RunEvent::Event(event);
                     }
 
@@ -150,17 +171,28 @@ impl Cpu {
     }
 
     pub fn step(&mut self) -> Option<Event> {
+        if self.pc == 0xbfc00000 {
+            thread::sleep(Duration::from_secs(3));
+        }
+
         self.event = None;
 
         self.inter.tick();
+
+        if self.stalls > 0 {
+            self.stalls -= 1;
+
+            return self.event;
+        }
 
         self.current_pc = self.pc;
 
         if self.current_pc % 4 != 0 {
             self.exception(Exception::LoadAddressError);
-            return self.event;
+            return Some(self.event.unwrap_or(Event::DoneStep));
         }
 
+        self.stalls += 4; // TODO: cacheの考慮
         let instruction = Instruction(self.load::<u32>(self.pc));
 
         self.pc = self.next_pc;
@@ -175,6 +207,7 @@ impl Cpu {
 
         if self.check_irq() {
             self.cause |= 1 << 10;
+            self.stalls += 1;
             self.exception(Exception::Irq);
         } else {
             self.decode_and_execute(instruction);
@@ -188,7 +221,11 @@ impl Cpu {
             return self.event;
         }
 
-        return self.event;
+        // if !self.breakpoints.is_empty() {
+        //     debug!("PC: {:08x}, instr: {:08x}", self.current_pc, instruction);
+        // }
+
+        return Some(self.event.unwrap_or(Event::DoneStep));
     }
 
     pub fn pc(&self) -> u32 {
@@ -199,6 +236,10 @@ impl Cpu {
         if self.watchpoints.contains(&addr) {
             self.event = Some(Event::WatchRead(addr));
         }
+        if addr == 0x1F801800 {
+            debug!("CD-ROM Status read at {:08x}", self.current_pc);
+        }
+        self.stalls += 2;
         self.inter.load(addr)
     }
 
@@ -207,8 +248,15 @@ impl Cpu {
             self.event = Some(Event::WatchWrite(addr));
         }
         if self.sr & 0x10000 != 0 {
-            warn!("Ignoring store while cache is isolated");
+            // warn!("Ignoring store while cache is isolated");
             return;
+        }
+        if addr == 0x1F801801 {
+            debug!(
+                "CD-ROM Command send: {:01x} at {:08x}",
+                val.as_u32() as u8,
+                self.current_pc
+            );
         }
         self.inter.store(addr, val)
     }
@@ -219,6 +267,81 @@ impl Cpu {
 
     pub fn put<T: Addressible>(&mut self, addr: u32, val: T) {
         self.inter.store(addr, val);
+    }
+
+    fn debug_string(&mut self, addr: u32) -> String {
+        let mut result = String::new();
+        let mut addr = addr;
+        loop {
+            let c = self.load::<u8>(addr);
+            if c == 0x00 {
+                break;
+            }
+            result.push(c as char);
+            addr += 1;
+        }
+
+        result
+    }
+
+    fn debug_event_class(&self, class: u32) -> String {
+        match class {
+            0x00000000..=0x0000000F => format!("MemCard {:01x}", class & 0xF),
+            0xF0000001 => "IRQ0 VBLANK".to_string(),
+            0xF0000002 => "IRQ1 GPU".to_string(),
+            0xF0000003 => "IRQ2 CDROM".to_string(),
+            0xF0000004 => "IRQ3 DMA".to_string(),
+            0xF0000005 => "IRQ4 RTC0".to_string(),
+            0xF0000006 => "IRQ5/IRQ6 RTC1 (timer1/timer2)".to_string(),
+            0xF0000007 => "not used (0xF0000007)".to_string(),
+            0xF0000008 => "IRQ7 Controller (JoyPad/MemCard)".to_string(),
+            0xF0000009 => "IRQ9 SPU".to_string(),
+            0xF000000A => "IRQ10 PIO".to_string(),
+            0xF000000B => "IRQ8 SIO".to_string(),
+            0xF0000010 => "Exception".to_string(),
+            0xF0000011 => "MemCard (0xF000011)".to_string(),
+            0xF0000012 => "MemCard (0xF000012)".to_string(),
+            0xF0000013 => "MemCard (0xF000013)".to_string(),
+            0xF2000000 => "Root Counter 0 (Dotclock)".to_string(),
+            0xF2000001 => "Root Counter 1 (Horizontal Retrace?)".to_string(),
+            0xF2000002 => "Root Counter 2 (One-Eighth of System Clock)".to_string(),
+            0xF2000003 => "Root Counter 3 (Vertical Retrace)".to_string(),
+            0xF4000001 => "MemCard (higher level BIOS function)".to_string(),
+            n => format!("Unknown ({:08x})", n),
+        }
+    }
+
+    fn debug_event_spec(&self, spec: u32) -> String {
+        match spec {
+            0x0001 => "counter become zero".to_string(),
+            0x0002 => "interrupted".to_string(),
+            0x0004 => "end of I/O".to_string(),
+            0x0008 => "file was closed".to_string(),
+            0x0010 => "command ack".to_string(),
+            0x0020 => "command completed".to_string(),
+            0x0040 => "data ready".to_string(),
+            0x0080 => "data end".to_string(),
+            0x0100 => "time out".to_string(),
+            0x0200 => "unknown command".to_string(),
+            0x0400 => "end of read buffer".to_string(),
+            0x0800 => "end of writer buffer".to_string(),
+            0x1000 => "general interrupt".to_string(),
+            0x2000 => "new device".to_string(),
+            0x4000 => "system call instr".to_string(),
+            0x8000 => "error happend".to_string(),
+            0x8001 => "previous write error happened".to_string(),
+            0x0301 => "domain error in libmath".to_string(),
+            0x0302 => "range error in libmath".to_string(),
+            n => format!("Unknown ({:08x})", n),
+        }
+    }
+
+    fn debug_event_mode(&self, mode: u32) -> String {
+        match mode {
+            0x1000 => "exec callback function, and stay busy".to_string(),
+            0x2000 => "Do NOT execute callback function, and mark event as ready".to_string(),
+            n => format!("Unknown ({:08x})", n),
+        }
     }
 
     fn branch(&mut self, offset: u32) {
@@ -233,7 +356,7 @@ impl Cpu {
     }
 
     fn exception(&mut self, cause: Exception) {
-        debug!("exception: {:?}", cause);
+        debug!("exception: {:?} at {:08x}", cause, self.current_pc);
         let handler = match self.sr & (1 << 22) != 0 {
             true => 0xbfc00180,
             false => 0x80000080,
@@ -257,8 +380,166 @@ impl Cpu {
         self.next_pc = self.pc.wrapping_add(4);
     }
 
+    fn debug_bios_func(&mut self) {
+        match self.current_pc {
+            0x000000A0 => match self.regs[9] {
+                0x00 => debug!(
+                    "BIOS A FileOpen filename: {}, accessmode: {:08x}",
+                    self.debug_string(self.regs[4]),
+                    self.regs[5]
+                ),
+                0x01 => debug!(
+                    "BIOS A FileSeek fd: {:08x}, offset: {:08x}, seektype: {:08x}",
+                    self.regs[4], self.regs[5], self.regs[6],
+                ),
+                0x02 => debug!(
+                    "BIOS A FileRead fd: {:08x}, dst: {:08x}, length: {:08x}",
+                    self.regs[4], self.regs[5], self.regs[6],
+                ),
+                0x03 => debug!(
+                    "BIOS A FileWrite fd: {:08x}, src: {:08x}, length: {:08x}",
+                    self.regs[4], self.regs[5], self.regs[6],
+                ),
+                0x04 => debug!("BIOS A FileClose fd: {:08x}", self.regs[4]),
+                0x05 => debug!(
+                    "BIOS A FileIoctl fd: {:08x}, cmd: {:08x}, arg: {:08x}",
+                    self.regs[4], self.regs[5], self.regs[6],
+                ),
+                0x06 => debug!("BIOS A exit code:{}", self.regs[4]),
+                0x07 => debug!("BIOS A FileGetDeviceFlag fd: {:08x}", self.regs[4]),
+                0x08 => debug!("BIOS A FileGetc fd: {:08x}", self.regs[4]),
+                0x09 => debug!("BIOS A FilePutc fd: {:08x}", self.regs[4]),
+                0x0A => debug!("BIOS A todigit char: {}", self.regs[4] as u8 as char),
+                0x13 => debug!("BIOS A setjmp buf: {:08x}", self.regs[4]),
+                0x17 => debug!("BIOS A strcmp..."),
+                0x19 => debug!(
+                    "BIOS A strcpy dst: {:08x}, src: {:08x}",
+                    self.regs[4], self.regs[5]
+                ),
+                0x1B => debug!("BIOS A strlen src: {:08x}", self.regs[4]),
+                0x25 => debug!("BIOS A toupper char: {}", self.regs[4] as u8 as char),
+                0x28 => debug!(
+                    "BIOS A bzero dst: {:08x}, len: {:08x}",
+                    self.regs[4], self.regs[5]
+                ),
+                0x2A => debug!(
+                    "BIOS A memcpy dst: {:08x}, src: {:08x}, len: {:08x}",
+                    self.regs[4], self.regs[5], self.regs[6]
+                ),
+                0x2F => debug!("BIOS A rand"),
+                0x33 => debug!("BIOS A malloc size: {:08x}", self.regs[4]),
+                0x39 => debug!(
+                    "BIOS A InitHeap addr: {:08x}, size: {:08x}",
+                    self.regs[4], self.regs[5]
+                ),
+                0x3F => debug!(
+                    "BIOS A printf txt: {}, param1: {}, param2: {}",
+                    self.debug_string(self.regs[4]),
+                    self.regs[5],
+                    self.regs[6]
+                ),
+                0x44 => debug!("BIOS A FlushCache"),
+                0x49 => debug!("BIOS A GPU_cw gp0cmd: {:08x}", self.regs[4]),
+                0x4A => debug!(
+                    "BIOS A GPU_cwp gp0cmd: {:08x}, num: {:08x}",
+                    self.regs[4], self.regs[5]
+                ),
+                0x4B => debug!("BIOS A send_gpu_linked_list({:08x})", self.regs[4]),
+                0x5B => debug!("BIOS A dev_tty_init"),
+                0x72 => debug!("BIOS A CdRemove"),
+                0x96 => debug!("BIOS A AddCDROMDevice"),
+                0x97 => debug!("BIOS A AddMemCardDevice"),
+                0x99 => debug!("BIOS A AddDummyTtyDevice"),
+                0xA3 => debug!("bIOS A DequeueCdIntr"),
+                n => {
+                    debug!("BIOS A {:08x}", n)
+                }
+            },
+            0x000000B0 => match self.regs[9] {
+                0x00 => debug!("BIOS B alloc_kernel_memory size: {:08x}", self.regs[4]),
+                0x07 => debug!(
+                    "BIOS B DeliverEvent class: {}, spec: {}",
+                    self.debug_event_class(self.regs[4]),
+                    self.debug_event_spec(self.regs[5])
+                ),
+                0x08 => debug!(
+                    "BIOS B OpenEvent class: {}, spec: {}, mode: {}, func: {:08x}",
+                    self.debug_event_class(self.regs[4]),
+                    self.debug_event_spec(self.regs[5]),
+                    self.debug_event_mode(self.regs[6]),
+                    self.regs[7]
+                ),
+                0x09 => debug!("BIOS B CloseEvent {:08x}", self.regs[4]),
+                0x0A => debug!("BIOS B WaitEvent {:08x}", self.regs[4]),
+                0x0B => trace!("BIOS B TestEvent {:08x}", self.regs[4]),
+                0x0C => debug!("BIOS B EnableEvent {:08x}", self.regs[4]),
+                0x0D => debug!("BIOS B DisableEvent {:08x}", self.regs[4]),
+                0x17 => debug!("BIOS B ReturnFromException"),
+                0x18 => debug!("BIOS B SetDefaultExitFromException"),
+                0x19 => debug!(
+                    "BIOS B SetCustomExitFromException addr: {:08x}",
+                    self.regs[4]
+                ),
+                0x3D => {
+                    let c = (self.regs[4] as u8) as char;
+                    debug!("BIOS B std_out_putchar {}", c);
+
+                    if c as u8 == 0x0A {
+                        info!("STDOUT: {}", self.tty_buffer);
+                        self.tty_buffer.clear();
+                    } else {
+                        self.tty_buffer.push(c);
+                    }
+                }
+                0x3F => {
+                    debug!("BIOS B std_out_puts {}", self.debug_string(self.regs[4]));
+                }
+                0x47 => debug!("BIOS B AddDevice device_info: {:08x}", self.regs[4]),
+                0x5B => debug!("BIOS B ChangeClearPad int: {:08x}", self.regs[4]),
+                n => {
+                    debug!("BIOS B {:08x}", n)
+                }
+            },
+            0x000000C0 => match self.regs[9] {
+                0x00 => debug!(
+                    "BIOS C EnqueueTimerAndVblankIrqs priority: {}",
+                    self.regs[4]
+                ),
+                0x01 => debug!("BIOS C EnqueueSyscallHandler priority: {}", self.regs[4]),
+                0x02 => debug!(
+                    "BIOS C SysEnqIntRP priority: {:08x}, struct: {:08x}",
+                    self.regs[4], self.regs[5],
+                ),
+                0x03 => debug!(
+                    "BIOS C SysDeqIntRP priority: {:08x}, struct: {:08x}",
+                    self.regs[4], self.regs[5],
+                ),
+                0x07 => debug!("BIOS C InstallExceptionHandlers"),
+                0x08 => debug!(
+                    "BIOS C SysInitMemory addr: {:08x}, size: {:08x}",
+                    self.regs[4], self.regs[5]
+                ),
+                0x0A => debug!(
+                    "BIOS C ChangeClearRCnt t: {:08x}, flag: {:08x}",
+                    self.regs[4], self.regs[5]
+                ),
+                0x0C => debug!("BIOS C InitDefInt priority: {}", self.regs[4]),
+                0x12 => debug!("BIOS C InstallDevices ttyflag: {}", self.regs[4]),
+                0x1C => debug!("BIOS C AdjustA0Table"),
+                n => {
+                    debug!("BIOS C {:08x}", n)
+                }
+            },
+            _ => {}
+        }
+    }
+
     pub fn decode_and_execute(&mut self, instruction: Instruction) {
         trace!("decode_and_execute: {:08x}", instruction);
+
+        self.stalls += 1;
+
+        self.debug_bios_func();
 
         match instruction.function() {
             0b000000 => match instruction.subfunction() {
@@ -479,7 +760,54 @@ impl Cpu {
     }
 
     fn op_cop2(&mut self, instruction: Instruction) {
-        panic!("unhandled GTE instruction: {:08x}", instruction);
+        let op = instruction.cop_opcode();
+        if op & 0x10 > 0 {
+            return self.gte.command(instruction.imm_cop());
+        }
+
+        match op {
+            0b00000 => self.op_mfc2(instruction),
+            0b00010 => self.op_cfc2(instruction),
+            0b00100 => self.op_mtc2(instruction),
+            0b00110 => self.op_ctc2(instruction),
+            _ => panic!("unhandled GTE instruction: {:08x}", instruction),
+        }
+    }
+
+    fn op_mtc2(&mut self, instruction: Instruction) {
+        let t = instruction.t();
+        let d = instruction.d();
+
+        let val = self.reg(t);
+
+        self.gte.store_data(d, val);
+    }
+
+    fn op_mfc2(&mut self, instruction: Instruction) {
+        let t = instruction.t();
+        let d = instruction.d();
+
+        let val = self.gte.load_data(d);
+
+        self.set_reg(t, val);
+    }
+
+    fn op_cfc2(&mut self, instruction: Instruction) {
+        let t = instruction.t();
+        let d = instruction.d();
+
+        let val = self.gte.load_control(d);
+
+        self.set_reg(t, val);
+    }
+
+    fn op_ctc2(&mut self, instruction: Instruction) {
+        let t = instruction.t();
+        let d = instruction.d();
+
+        let val = self.reg(t);
+
+        self.gte.store_control(d, val);
     }
 
     fn op_cop3(&mut self, _: Instruction) {
@@ -555,7 +883,11 @@ impl Cpu {
         self.branch = true;
     }
 
-    fn op_syscall(&mut self, _: Instruction) {
+    fn op_syscall(&mut self, instruction: Instruction) {
+        debug!(
+            "CPU syscall 0x{:08x} at {:08x}",
+            instruction.0, self.current_pc
+        );
         self.exception(Exception::SysCall)
     }
 
@@ -988,7 +1320,7 @@ impl Cpu {
 
     fn op_sb(&mut self, instruction: Instruction) {
         if self.sr & 0x10000 != 0 {
-            warn!("Ignoring store while cache is isolated");
+            // warn!("Ignoring store while cache is isolated");
             return;
         }
 
@@ -1025,7 +1357,7 @@ impl Cpu {
 
     fn op_sw(&mut self, instruction: Instruction) {
         if self.sr & 0x10000 != 0 {
-            warn!("ignoring store while cache is isolated");
+            // warn!("ignoring store while cache is isolated");
             return;
         }
 

@@ -68,6 +68,12 @@ impl Instruction {
         op & 0x3FFFFFF
     }
 
+    pub fn imm_cop(self) -> u32 {
+        let Instruction(op) = self;
+
+        op & 0x1FFFFFF
+    }
+
     pub fn cop_opcode(self) -> u32 {
         self.s().0
     }

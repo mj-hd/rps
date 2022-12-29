@@ -57,9 +57,15 @@ impl Timer {
 
     pub fn store<T: Addressible>(&mut self, offset: u32, val: T) {
         match offset {
-            0 => self.counter = val.as_u32() as u16,
+            0 => {
+                debug!("TIMER{} set counter {:08x}", self.index, val.as_u32());
+                self.counter = val.as_u32() as u16;
+            }
             4 => self.set_mode(val.as_u32()),
-            8 => self.target = val.as_u32() as u16,
+            8 => {
+                debug!("TIMER{} set target {:04x}", self.index, val.as_u32() as u16);
+                self.target = val.as_u32() as u16;
+            }
             _ => unreachable!(),
         }
     }
@@ -131,7 +137,7 @@ impl Timer {
             },
             1 => match self.clock_source {
                 0 | 2 => true,
-                1 | 3 => hblank,
+                1 | 3 => !prev_hblank && hblank,
                 _ => unreachable!(),
             },
             2 => match self.clock_source {
@@ -149,12 +155,6 @@ impl Timer {
             }
         }
 
-        if self.counter == 0xFFFF {
-            if self.irq_full {
-                self.raise();
-            }
-        }
-
         if self.counter == self.target {
             if self.irq_target {
                 self.raise();
@@ -163,11 +163,18 @@ impl Timer {
                 self.counter = 0;
             }
         }
+
+        if self.counter == 0xFFFF {
+            if self.irq_full {
+                self.raise();
+            }
+        }
     }
 
     fn mode(&self) -> u32 {
         let mut res = self.sync_enable as u32;
         res |= ((self.sync_mode as u32) & 0b11) << 1;
+        res |= (self.use_target as u32) << 3;
         res |= (self.irq_target as u32) << 4;
         res |= (self.irq_full as u32) << 5;
         res |= (self.irq_repeat as u32) << 6;
@@ -181,9 +188,11 @@ impl Timer {
     }
 
     fn set_mode(&mut self, val: u32) {
+        debug!("TIMER{} set mode {:08x}", self.index, val);
         self.raised = false;
         self.sync_enable = val & 1 != 0;
         self.sync_mode = ((val >> 1) & 0b11) as u8;
+        self.use_target = (val >> 3) & 1 != 0;
         self.irq_target = (val >> 4) & 1 != 0;
         self.irq_full = (val >> 5) & 1 != 0;
         self.irq_repeat = (val >> 6) & 1 != 0;

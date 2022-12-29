@@ -48,7 +48,10 @@ impl Interrupts {
 
         match offset {
             0 => self.ack(val),
-            4 => self.mask = val,
+            4 => {
+                debug!("irq mask {:08x}", val);
+                self.mask = val;
+            }
             _ => unreachable!(),
         }
     }
@@ -75,6 +78,8 @@ impl Interrupts {
         }
 
         self.prev_pulse &= !mask;
-        self.prev_pulse |= (val as u32) * mask;
+        if val {
+            self.prev_pulse |= mask;
+        }
     }
 }

@@ -13,9 +13,12 @@ log = "0.4.16"
 env_logger = "0.9.0"
 winit = "0.26.1"
 wgpu = "0.12.0"
-pollster = "0.2.5"
+smol = "1.2.5"
 gdbstub = "0.6.1"
 gdbstub_arch = "0.2.2"
+num-traits = "0.2.15"
+num-derive = "0.3.3"
+vectrix = "0.2.0"
 
 [dependencies.bytemuck]
 version = "1.9.1"

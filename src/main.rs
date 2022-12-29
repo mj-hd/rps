@@ -1,6 +1,9 @@
 use std::{
+    fs::File,
+    io::{self, BufReader, Read},
     net::{TcpListener, TcpStream},
     path::Path,
+    string,
     sync::mpsc,
     thread,
 };
@@ -32,10 +35,10 @@ enum PsThreadEvent {}
 enum UiThreadEvent {}
 
 fn main() {
-    pollster::block_on(run()).unwrap();
+    run().unwrap();
 }
 
-async fn run() -> DynResult<()> {
+fn run() -> DynResult<()> {
     env_logger::init();
 
     let matches = Command::new("rps")
@@ -48,6 +51,20 @@ async fn run() -> DynResult<()> {
                 .long("debug")
                 .help("enable gdb remote debugging"),
         )
+        .arg(
+            Arg::new("rom")
+                .short('r')
+                .long("rom")
+                .help("rom file")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::new("bios")
+                .short('b')
+                .long("bios")
+                .help("bios file")
+                .takes_value(true),
+        )
         .get_matches();
 
     let event_loop = EventLoop::new();
@@ -59,49 +76,71 @@ async fn run() -> DynResult<()> {
         .build(&event_loop)
         .unwrap();
 
-    let bios = Bios::new(&Path::new("roms/scph5500.rom")).unwrap();
+    let bios = if matches.is_present("bios") {
+        Bios::new(Path::new(
+            matches.value_of::<String>("bios".to_string()).unwrap(),
+        ))
+        .unwrap()
+    } else {
+        Bios::new(Path::new("roms/bios.rom")).unwrap()
+    };
 
-    let renderer = Renderer::new(&window).await;
+    let rom = if matches.is_present("rom") {
+        let rom = BufReader::new(
+            File::open(Path::new(
+                matches.value_of::<String>("rom".to_string()).unwrap(),
+            ))
+            .unwrap(),
+        );
+
+        Some(rom.bytes().collect::<io::Result<Vec<u8>>>().unwrap())
+    } else {
+        None
+    };
+
+    let renderer = Renderer::new(&window);
     let gpu = Gpu::new(renderer);
-    let inter = Interconnect::new(bios, gpu);
 
     let (ps_sender, ps_receiver) = mpsc::sync_channel::<PsThreadEvent>(1);
     let (ui_sender, ui_receiver) = mpsc::sync_channel::<UiThreadEvent>(1);
 
     {
-        let mut cpu = Cpu::new(inter);
-
         thread::spawn(move || {
-            if !matches.is_present("debug") {
-                while cpu.step() != Some(cpu::Event::Halted) {}
+            smol::block_on(async {
+                let inter = Interconnect::new(bios, gpu, rom);
+                let mut cpu = Cpu::new(inter);
 
-                return;
-            }
+                if !matches.is_present("debug") {
+                    while cpu.step() != Some(cpu::Event::Halted) {}
 
-            let connection: Box<dyn ConnectionExt<Error = std::io::Error>> =
-                Box::new(wait_for_tcp(9001).unwrap());
-            let gdb = GdbStub::new(connection);
-            match gdb.run_blocking::<EmuGdbEventLoop>(&mut cpu) {
-                Ok(disconnect_reason) => match disconnect_reason {
-                    DisconnectReason::Disconnect => {
-                        println!("GDB client has disconnected. Running to completion...");
-                        while cpu.step() != Some(cpu::Event::Halted) {}
-                    }
-                    DisconnectReason::TargetExited(code) => {
-                        println!("Target exited with code {}!", code)
-                    }
-                    DisconnectReason::TargetTerminated(sig) => {
-                        println!("Target terminated with signal {}!", sig)
-                    }
-                    DisconnectReason::Kill => println!("GDB sent a kill command!"),
-                },
-                Err(GdbStubError::TargetError(e)) => {
-                    println!("target encountered a fatal error: {}", e)
+                    return;
                 }
-                Err(e) => {
-                    println!("gdbstub encountered a fatal error: {}", e)
-                }
-            };
+
+                let connection: Box<dyn ConnectionExt<Error = std::io::Error>> =
+                    Box::new(wait_for_tcp(9001).unwrap());
+                let gdb = GdbStub::new(connection);
+                match gdb.run_blocking::<EmuGdbEventLoop>(&mut cpu) {
+                    Ok(disconnect_reason) => match disconnect_reason {
+                        DisconnectReason::Disconnect => {
+                            println!("GDB client has disconnected. Running to completion...");
+                            while cpu.step() != Some(cpu::Event::Halted) {}
+                        }
+                        DisconnectReason::TargetExited(code) => {
+                            println!("Target exited with code {}!", code)
+                        }
+                        DisconnectReason::TargetTerminated(sig) => {
+                            println!("Target terminated with signal {}!", sig)
+                        }
+                        DisconnectReason::Kill => println!("GDB sent a kill command!"),
+                    },
+                    Err(GdbStubError::TargetError(e)) => {
+                        println!("target encountered a fatal error: {}", e)
+                    }
+                    Err(e) => {
+                        println!("gdbstub encountered a fatal error: {}", e)
+                    }
+                };
+            });
         });
     }
 
@@ -145,37 +184,38 @@ impl run_blocking::BlockingEventLoop for EmuGdbEventLoop {
             <Self::Connection as Connection>::Error,
         >,
     > {
-        let poll_incoming_data = || conn.peek().map(|b| b.is_some()).unwrap_or(true);
+        smol::block_on(async {
+            let poll_incoming_data = || conn.peek().map(|b| b.is_some()).unwrap_or(true);
+            match target.run(poll_incoming_data) {
+                cpu::RunEvent::IncomingData => {
+                    let byte = conn
+                        .read()
+                        .map_err(run_blocking::WaitForStopReasonError::Connection)?;
+                    Ok(run_blocking::Event::IncomingData(byte))
+                }
+                cpu::RunEvent::Event(event) => {
+                    use gdbstub::target::ext::breakpoints::WatchKind;
 
-        match target.run(poll_incoming_data) {
-            cpu::RunEvent::IncomingData => {
-                let byte = conn
-                    .read()
-                    .map_err(run_blocking::WaitForStopReasonError::Connection)?;
-                Ok(run_blocking::Event::IncomingData(byte))
+                    let stop_reason = match event {
+                        cpu::Event::DoneStep => SingleThreadStopReason::DoneStep,
+                        cpu::Event::Halted => SingleThreadStopReason::Terminated(Signal::SIGSTOP),
+                        cpu::Event::Break => SingleThreadStopReason::SwBreak(()),
+                        cpu::Event::WatchWrite(addr) => SingleThreadStopReason::Watch {
+                            tid: (),
+                            kind: WatchKind::Write,
+                            addr,
+                        },
+                        cpu::Event::WatchRead(addr) => SingleThreadStopReason::Watch {
+                            tid: (),
+                            kind: WatchKind::Read,
+                            addr,
+                        },
+                    };
+
+                    Ok(run_blocking::Event::TargetStopped(stop_reason))
+                }
             }
-            cpu::RunEvent::Event(event) => {
-                use gdbstub::target::ext::breakpoints::WatchKind;
-
-                let stop_reason = match event {
-                    cpu::Event::DoneStep => SingleThreadStopReason::DoneStep,
-                    cpu::Event::Halted => SingleThreadStopReason::Terminated(Signal::SIGSTOP),
-                    cpu::Event::Break => SingleThreadStopReason::SwBreak(()),
-                    cpu::Event::WatchWrite(addr) => SingleThreadStopReason::Watch {
-                        tid: (),
-                        kind: WatchKind::Write,
-                        addr,
-                    },
-                    cpu::Event::WatchRead(addr) => SingleThreadStopReason::Watch {
-                        tid: (),
-                        kind: WatchKind::Read,
-                        addr,
-                    },
-                };
-
-                Ok(run_blocking::Event::TargetStopped(stop_reason))
-            }
-        }
+        })
     }
 
     fn on_interrupt(

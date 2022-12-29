@@ -23,31 +23,27 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub async fn new(window: &Window) -> Renderer {
+    pub fn new(window: &Window) -> Renderer {
         let size = window.inner_size();
 
         let instance = wgpu::Instance::new(wgpu::Backends::all());
         let surface = unsafe { instance.create_surface(window) };
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::default(),
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-            })
-            .await
-            .unwrap();
+        let adapter = smol::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::default(),
+            compatible_surface: Some(&surface),
+            force_fallback_adapter: false,
+        }))
+        .unwrap();
 
-        let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    features: wgpu::Features::empty(),
-                    limits: wgpu::Limits::downlevel_defaults(),
-                    label: None,
-                },
-                None,
-            )
-            .await
-            .unwrap();
+        let (device, queue) = smol::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                features: wgpu::Features::empty(),
+                limits: wgpu::Limits::downlevel_defaults(),
+                label: None,
+            },
+            None,
+        ))
+        .unwrap();
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -239,6 +235,18 @@ impl Renderer {
 
     pub fn set_draw_offset(&mut self, x: i16, y: i16) {
         self.offset.set(x, y);
+    }
+
+    pub fn fill_rect(&mut self, color: Color, top_left: Position, size: Position) {
+        self.push_quad(
+            [
+                top_left,
+                top_left.inflate(size.0, 0),
+                top_left.inflate(0, size.1),
+                top_left.inflate(size.0, size.1),
+            ],
+            [color; 4],
+        );
     }
 }
 

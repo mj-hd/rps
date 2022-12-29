@@ -1,11 +1,14 @@
-pub mod addressible;
+mod addressible;
 pub mod bios;
 mod cdrom;
 pub mod cpu;
-pub mod dma;
+mod dma;
 pub mod gpu;
+mod gte;
 pub mod interconnect;
 mod interrupts;
+mod joypad;
 mod ram;
 mod scratchpad;
 mod timer;
+mod utils;

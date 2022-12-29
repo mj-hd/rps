@@ -9,6 +9,7 @@ pub trait Addressible {
     fn width() -> AccessWidth;
     fn from_u32(val: u32) -> Self;
     fn as_u32(&self) -> u32;
+    fn unwrap_u16(&self) -> u16;
 }
 
 impl Addressible for u8 {
@@ -22,6 +23,10 @@ impl Addressible for u8 {
 
     fn as_u32(&self) -> u32 {
         *self as u32
+    }
+
+    fn unwrap_u16(&self) -> u16 {
+        panic!("invalid u16 unwrap of u8")
     }
 }
 
@@ -37,6 +42,10 @@ impl Addressible for u16 {
     fn as_u32(&self) -> u32 {
         *self as u32
     }
+
+    fn unwrap_u16(&self) -> u16 {
+        *self
+    }
 }
 
 impl Addressible for u32 {
@@ -50,5 +59,9 @@ impl Addressible for u32 {
 
     fn as_u32(&self) -> u32 {
         *self
+    }
+
+    fn unwrap_u16(&self) -> u16 {
+        panic!("invalid u16 unwrap of u32");
     }
 }

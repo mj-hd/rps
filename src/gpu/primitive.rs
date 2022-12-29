@@ -65,6 +65,18 @@ impl Position {
 
         Position(x, y)
     }
+
+    pub fn inflate(self, width: i16, height: i16) -> Position {
+        Position(self.0 + width, self.1 + height)
+    }
+
+    pub fn deflate(self, width: i16, height: i16) -> Position {
+        Position(self.0 - width, self.1 - height)
+    }
+
+    pub fn limit(self, x: i16, y: i16) -> Position {
+        Position(self.0.min(x), self.1.min(y))
+    }
 }
 
 #[derive(Clone, Copy, Default, Debug)]
